@@ -28,14 +28,14 @@ const THEME_KEY = "portfolio-theme-v1";
 
 async function loadData() {
   try {
-    const result = await window.storage.get(STORAGE_KEY);
-    return result ? JSON.parse(result.value) : null;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
 
 async function saveData(data) {
   try {
-    await window.storage.set(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) { console.error("Save failed:", e); }
 }
 
