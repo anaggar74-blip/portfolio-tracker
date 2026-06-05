@@ -46,7 +46,7 @@ async function loadData() {
         return row.data;
       }
     }
-  } catch {}
+  } catch (e) { console.error("Supabase load error:", e); }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? JSON.parse(raw) : null;
