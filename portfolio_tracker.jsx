@@ -561,6 +561,8 @@ export default function PortfolioTracker() {
   const [showFxModal, setShowFxModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [marketFilter, setMarketFilter] = useState("all");
+  const [showLogin, setShowLogin] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("synced");
 
   const toggleTheme = () => {
     const next = !dark;
@@ -569,21 +571,57 @@ export default function PortfolioTracker() {
   };
 
   useEffect(() => {
-    loadData().then(d => {
+    async function init() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) setShowLogin(true);
+      const d = await loadData();
       if (d && d.transactions && d.transactions.length > 0) {
         setData(d);
       } else {
         setData(SEED_DATA);
-        saveData(SEED_DATA);
+        saveData(SEED_DATA).then(setSyncStatus);
       }
       setLoading(false);
+    }
+    init();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (session) {
+        setShowLogin(false);
+        const d = await loadData();
+        const dataToUse = (d && d.transactions && d.transactions.length > 0) ? d : SEED_DATA;
+        if (d && d.transactions && d.transactions.length > 0) setData(d);
+        else setData(SEED_DATA);
+        // Always push to Supabase after login so the row exists for other devices
+        saveData(dataToUse).then(setSyncStatus);
+      }
     });
+    return () => subscription.unsubscribe();
   }, []);
 
-  const persist = useCallback((newData) => {
+  const persist = useCallback(async (newData) => {
     setData(newData);
-    saveData(newData);
+    setSyncStatus("syncing");
+    const result = await saveData(newData);
+    setSyncStatus(result);
   }, []);
+
+  useEffect(() => {
+    const handleOnline = async () => {
+      if (syncStatus !== "offline") return;
+      setSyncStatus("syncing");
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) { setSyncStatus("synced"); return; }
+        const result = await saveData(JSON.parse(raw));
+        setSyncStatus(result);
+      } catch {
+        setSyncStatus("offline");
+      }
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [syncStatus]);
 
   const addTransaction = (tx) => persist({ ...data, transactions: [...data.transactions, tx] });
   const addTopup = (t) => persist({ ...data, topups: [...data.topups, t] });
