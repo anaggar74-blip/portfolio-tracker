@@ -527,6 +527,24 @@ function LoginModal({ T }) {
   );
 }
 
+// ─── Sync Status Pill ───
+function SyncStatus({ status, T }) {
+  const cfg = {
+    synced:  { label: "Synced ✓", color: T.green },
+    syncing: { label: "Syncing…",  color: T.gold  },
+    offline: { label: "Offline",   color: T.gold  },
+  }[status] ?? { label: "Synced ✓", color: T.green };
+  return (
+    <div style={{
+      padding: "5px 10px", borderRadius: 20,
+      background: T.surfaceBg, border: `1px solid ${T.border}`,
+      fontSize: 11, fontWeight: 600, color: cfg.color, letterSpacing: "0.3px",
+    }}>
+      {cfg.label}
+    </div>
+  );
+}
+
 // ─── Main App ───
 export default function PortfolioTracker() {
   const [data, setData] = useState(INITIAL_DATA);
