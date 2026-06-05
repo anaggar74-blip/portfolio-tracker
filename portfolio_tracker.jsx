@@ -121,9 +121,11 @@ const SEED_DATA = {
     "egx:TMGH": "86.50", "egx:CTI": "16.84", "egx:BCO": "1.42",
     "adx:ADSB": "7.29", "adx:ALDAR": "8.50",
   },
+  stockCards: {},
+  watchList: [],
 };
 
-const INITIAL_DATA = { transactions: [], topups: [], fxRates: DEFAULT_FX, currentPrices: {} };
+const INITIAL_DATA = { transactions: [], topups: [], fxRates: DEFAULT_FX, currentPrices: {}, stockCards: {}, watchList: [] };
 
 // ─── Mackenzy Colour Standard ───
 const DARK = {
@@ -188,17 +190,17 @@ const mkBtnSecondary = (T) => ({
 });
 
 // ─── Modal ───
-function Modal({ open, onClose, title, children, T }) {
+function Modal({ open, onClose, title, children, T, maxWidth = 520, zIndex = 1000 }) {
   if (!open) return null;
   return (
     <div style={{
-      position: "fixed", inset: 0, zIndex: 1000,
+      position: "fixed", inset: 0, zIndex,
       background: "rgba(0,0,0,0.65)", backdropFilter: "blur(4px)",
       display: "flex", alignItems: "center", justifyContent: "center", padding: "20px",
     }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{
         background: T.cardBg, border: `1px solid ${T.border}`,
-        borderRadius: 12, width: "100%", maxWidth: 520,
+        borderRadius: 12, width: "100%", maxWidth,
         maxHeight: "85vh", overflow: "auto",
         boxShadow: "0 24px 48px rgba(0,0,0,0.35)",
       }}>
@@ -545,6 +547,365 @@ function SyncStatus({ status, T }) {
   );
 }
 
+// ─── Parse Investment Hub Text ───
+function parseInvestmentHubText(text) {
+  if (!text || !text.trim()) return {};
+  const result = {};
+  const t1 = text.match(/(?:T1|Target\s*1|target\s*price\s*1)\s*[:\s]\s*\$?([\d,]+(?:\.\d+)?)/i);
+  if (t1) result.t1 = parseFloat(t1[1].replace(/,/g, ""));
+  const t2 = text.match(/(?:T2|Target\s*2|target\s*price\s*2)\s*[:\s]\s*\$?([\d,]+(?:\.\d+)?)/i);
+  if (t2) result.t2 = parseFloat(t2[1].replace(/,/g, ""));
+  const sl = text.match(/(?:SL|Stop\s*[Ll]oss|stop-loss)\s*[:\s]\s*\$?([\d,]+(?:\.\d+)?)/i);
+  if (sl) result.stopLoss = parseFloat(sl[1].replace(/,/g, ""));
+  const kpiPatterns = [
+    { label: "P/E Ratio",      re: /P\/E(?:\s+ratio)?[:\s]+([\d.]+)/i },
+    { label: "Revenue Growth", re: /revenue\s+growth[:\s]+([\d.]+%?)/i },
+    { label: "EPS",            re: /EPS[:\s]+\$?([\d.]+)/i },
+    { label: "Debt/Equity",    re: /debt[/\s-]+equity[:\s]+([\d.]+)/i },
+    { label: "Profit Margin",  re: /profit\s+margin[:\s]+([\d.]+%?)/i },
+  ];
+  const kpis = [];
+  kpiPatterns.forEach(({ label, re }) => {
+    const m = text.match(re);
+    if (m) kpis.push({ label, value: m[1] });
+  });
+  if (kpis.length > 0) result.kpis = kpis;
+  const bullets = [...text.matchAll(/^[ \t]*[-•*]\s+(.+)$/gm)].map(m => ({ text: m[1].trim(), date: "" }));
+  if (bullets.length > 0) result.news = bullets.slice(0, 5);
+  return result;
+}
+
+// ─── Import Suggestions Modal ───
+function ImportSuggestionsModal({ open, onClose, onImport, T }) {
+  const [text, setText] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [selected, setSelected] = useState({});
+  const IS = mkInput(T), BP = mkBtnPrimary(T), BSS = mkBtnSecondary(T);
+
+  const handleParse = () => {
+    const result = parseInvestmentHubText(text);
+    setParsed(result);
+    const sel = {};
+    Object.keys(result).forEach(k => { sel[k] = true; });
+    setSelected(sel);
+  };
+
+  const handleApply = () => {
+    const toApply = {};
+    Object.entries(selected).forEach(([k, v]) => {
+      if (v && parsed[k] !== undefined) toApply[k] = parsed[k];
+    });
+    onImport(toApply);
+    setText(""); setParsed(null); setSelected({});
+    onClose();
+  };
+
+  const fieldLabels = { t1: "Target 1 (T1)", t2: "Target 2 (T2)", stopLoss: "Stop Loss", kpis: "Company KPIs", news: "News", notes: "Notes" };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Import from Investment Hub" T={T} maxWidth={540} zIndex={1100}>
+      <p style={{ fontSize: 13, color: T.textMuted, margin: "0 0 12px" }}>
+        Paste recommendations from your Investment Hub conversation below.
+      </p>
+      <textarea
+        style={{ ...IS, height: 120, resize: "vertical", marginBottom: 10 }}
+        placeholder={"Paste Claude's recommendation text here — e.g. 'T1: $95, T2: $115, SL: $62'"}
+        value={text}
+        onChange={e => setText(e.target.value)}
+      />
+      <button style={{ ...BSS, fontSize: 12, marginBottom: 14 }} onClick={handleParse}>Parse Text</button>
+
+      {parsed && (
+        <div style={{ background: T.surfaceBg, borderRadius: 8, padding: 12, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.5px" }}>Detected Fields</div>
+          {Object.keys(parsed).length === 0 ? (
+            <p style={{ fontSize: 13, color: T.textMuted, margin: 0 }}>No fields detected. Try using T1:, T2:, SL: labels.</p>
+          ) : Object.entries(parsed).map(([k, v]) => (
+            <label key={k} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!selected[k]} onChange={e => setSelected(p => ({ ...p, [k]: e.target.checked }))} style={{ marginTop: 2 }} />
+              <div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{fieldLabels[k] || k}: </span>
+                <span style={{ fontSize: 12, color: T.textSub }}>
+                  {Array.isArray(v) ? v.map(item => item.text || JSON.stringify(item)).join(", ") : String(v)}
+                </span>
+              </div>
+            </label>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button style={BSS} onClick={onClose}>Cancel</button>
+        <button
+          style={{ ...BP, opacity: !parsed || Object.keys(parsed).length === 0 ? 0.5 : 1 }}
+          onClick={handleApply}
+          disabled={!parsed || Object.keys(parsed).length === 0}
+        >Apply as Suggestions</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Watch List Add Modal ───
+function WatchListAddModal({ open, onClose, onSave, T }) {
+  const [form, setForm] = useState({ market: "us", ticker: "", name: "" });
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const IS = mkInput(T), SS = mkSelect(T), BP = mkBtnPrimary(T), BSS = mkBtnSecondary(T);
+
+  const handleSave = () => {
+    if (!form.ticker) return;
+    onSave({
+      id: genId(), market: form.market, ticker: form.ticker.toUpperCase(), name: form.name,
+      t1: null, t2: null, stopLoss: null, strategy: "", thesis: "",
+      kpis: [
+        { label: "P/E Ratio", value: "" }, { label: "Revenue Growth", value: "" },
+        { label: "EPS", value: "" }, { label: "Debt/Equity", value: "" },
+        { label: "Profit Margin", value: "" },
+      ],
+      events: [], news: [], dividends: [], notes: "", pendingSuggestions: null,
+    });
+    setForm({ market: "us", ticker: "", name: "" });
+    onClose();
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add to Watch List" T={T}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Market" T={T}>
+          <select style={SS} value={form.market} onChange={e => set("market", e.target.value)}>
+            {MARKETS.map(m => <option key={m.id} value={m.id}>{m.flag} {m.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Ticker / Symbol" T={T}>
+          <input style={IS} placeholder="e.g. AAPL" value={form.ticker} onChange={e => set("ticker", e.target.value)} />
+        </Field>
+      </div>
+      <Field label="Company Name (optional)" T={T}>
+        <input style={IS} placeholder="e.g. Apple Inc." value={form.name} onChange={e => set("name", e.target.value)} />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <button style={BSS} onClick={onClose}>Cancel</button>
+        <button style={BP} onClick={handleSave}>Add to Watch List</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Stock Card Modal ───
+function StockCardModal({ open, onClose, holding, cardData, onSave, T }) {
+  const DEFAULT_KPIS = [
+    { label: "P/E Ratio", value: "" }, { label: "Revenue Growth", value: "" },
+    { label: "EPS", value: "" }, { label: "Debt/Equity", value: "" },
+    { label: "Profit Margin", value: "" },
+  ];
+
+  const [form, setForm] = useState(null);
+  const [showImport, setShowImport] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      const d = cardData || {};
+      setForm({
+        t1: d.t1 != null ? d.t1 : "",
+        t2: d.t2 != null ? d.t2 : "",
+        stopLoss: d.stopLoss != null ? d.stopLoss : "",
+        strategy: d.strategy || "",
+        thesis: d.thesis || "",
+        kpis: d.kpis?.length ? d.kpis : DEFAULT_KPIS,
+        events: d.events || [],
+        news: d.news || [],
+        dividends: d.dividends || [],
+        notes: d.notes || "",
+        pendingSuggestions: d.pendingSuggestions || null,
+      });
+    }
+  }, [open, cardData]);
+
+  if (!open || !form) return null;
+
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  const acceptSuggestion = (field) => {
+    set(field, form.pendingSuggestions[field]);
+    const sugg = { ...form.pendingSuggestions };
+    delete sugg[field];
+    set("pendingSuggestions", Object.keys(sugg).length ? sugg : null);
+  };
+
+  const dismissSuggestion = (field) => {
+    const sugg = { ...form.pendingSuggestions };
+    delete sugg[field];
+    set("pendingSuggestions", Object.keys(sugg).length ? sugg : null);
+  };
+
+  const acceptAll = () => {
+    const s = form.pendingSuggestions;
+    if (!s) return;
+    const updates = {};
+    ["t1", "t2", "stopLoss", "kpis", "events", "news", "notes"].forEach(f => {
+      if (s[f] !== undefined) updates[f] = s[f];
+    });
+    setForm(p => ({ ...p, ...updates, pendingSuggestions: null }));
+  };
+
+  const handleImport = (suggestions) => {
+    setForm(p => ({ ...p, pendingSuggestions: { ...(p.pendingSuggestions || {}), ...suggestions } }));
+  };
+
+  const handleSave = () => {
+    const toSave = {
+      ...form,
+      t1: form.t1 !== "" && form.t1 !== null ? (parseFloat(form.t1) || null) : null,
+      t2: form.t2 !== "" && form.t2 !== null ? (parseFloat(form.t2) || null) : null,
+      stopLoss: form.stopLoss !== "" && form.stopLoss !== null ? (parseFloat(form.stopLoss) || null) : null,
+    };
+    onSave(toSave);
+    onClose();
+  };
+
+  const IS = mkInput(T), BP = mkBtnPrimary(T), BSS = mkBtnSecondary(T);
+  const mkt = MARKETS.find(m => m.id === (holding?.market || cardData?.market));
+  const ticker = holding?.ticker || cardData?.ticker || "";
+
+  const SuggBadge = ({ field }) => {
+    if (!form.pendingSuggestions?.[field]) return null;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, padding: "4px 8px", background: T.goldSoft, borderRadius: 5, border: `1px solid ${T.gold}44` }}>
+        <span style={{ fontSize: 11, color: T.gold, flex: 1 }}>Suggested: {form.pendingSuggestions[field]}</span>
+        <button onClick={() => acceptSuggestion(field)} style={{ fontSize: 10, background: T.gold, color: T.mainBg, border: "none", borderRadius: 3, padding: "1px 7px", cursor: "pointer", fontWeight: 700 }}>✓</button>
+        <button onClick={() => dismissSuggestion(field)} style={{ fontSize: 11, background: "none", border: "none", color: T.textMuted, cursor: "pointer", padding: "0 2px" }}>✕</button>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <Modal open={open} onClose={onClose} title={`${mkt?.flag || ""} ${ticker} — Stock Card`} T={T} maxWidth={900}>
+        {form.pendingSuggestions && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: T.goldSoft, borderRadius: 7, border: `1px solid ${T.gold}44`, marginBottom: 16 }}>
+            <span style={{ fontSize: 13, color: T.gold }}>⚡ Pending suggestions from Investment Hub</span>
+            <button onClick={acceptAll} style={{ ...BP, fontSize: 11, padding: "4px 12px" }}>Accept All</button>
+          </div>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+          {/* Left column */}
+          <div>
+            {holding && (
+              <div style={{ background: T.surfaceBg, borderRadius: 8, padding: 14, marginBottom: 16, border: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 }}>Position</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {[
+                    ["Qty", formatNum(holding.qty, holding.qty < 1 ? 6 : 2)],
+                    ["Avg Cost", `${formatNum(holding.avgCost)} ${holding.currency}`],
+                    ["Value", holding.currentValue != null ? formatNum(holding.currentValue) : formatNum(holding.costBasis)],
+                    ["Unrealized P&L", holding.unrealizedPL != null ? `${holding.unrealizedPL >= 0 ? "+" : ""}${formatNum(holding.unrealizedPL)}` : "—"],
+                    ["P&L %", holding.unrealizedPct != null ? `${holding.unrealizedPct >= 0 ? "+" : ""}${formatNum(holding.unrealizedPct, 1)}%` : "—"],
+                    ["Bucket", holding.bucket],
+                  ].map(([k, v]) => (
+                    <div key={k}>
+                      <div style={{ fontSize: 11, color: T.textMuted }}>{k}</div>
+                      <div style={{
+                        fontSize: 13, fontWeight: 600,
+                        color: (k === "Unrealized P&L" || k === "P&L %")
+                          ? (holding.unrealizedPL != null ? (holding.unrealizedPL >= 0 ? T.green : T.red) : T.textSub)
+                          : T.text,
+                        fontFamily: k !== "Bucket" ? "'JetBrains Mono', monospace" : "inherit",
+                      }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 }}>Trading Plan</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+              {[{ label: "Target 1 (T1)", field: "t1" }, { label: "Target 2 (T2)", field: "t2" }, { label: "Stop Loss", field: "stopLoss" }].map(({ label, field }) => (
+                <div key={field}>
+                  <Field label={label} T={T}>
+                    <input style={IS} type="number" step="any" placeholder="—" value={form[field]} onChange={e => set(field, e.target.value)} />
+                  </Field>
+                  <SuggBadge field={field} />
+                </div>
+              ))}
+            </div>
+
+            <Field label="Strategy" T={T}>
+              <input style={IS} placeholder="Swing, Long-term, Value..." value={form.strategy} onChange={e => set("strategy", e.target.value)} />
+            </Field>
+            <Field label="Investment Thesis" T={T}>
+              <textarea style={{ ...IS, height: 80, resize: "vertical" }} placeholder="Why you hold this position..." value={form.thesis} onChange={e => set("thesis", e.target.value)} />
+            </Field>
+          </div>
+
+          {/* Right column */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Company KPIs</div>
+            <div style={{ background: T.surfaceBg, borderRadius: 8, padding: 12, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+              {form.kpis.map((kpi, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: i < form.kpis.length - 1 ? 8 : 0 }}>
+                  <input style={{ ...IS, fontSize: 12 }} placeholder="Metric" value={kpi.label}
+                    onChange={e => { const k = [...form.kpis]; k[i] = { ...k[i], label: e.target.value }; set("kpis", k); }} />
+                  <input style={{ ...IS, fontSize: 12 }} placeholder="Value" value={kpi.value}
+                    onChange={e => { const k = [...form.kpis]; k[i] = { ...k[i], value: e.target.value }; set("kpis", k); }} />
+                </div>
+              ))}
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Upcoming Events</div>
+            <div style={{ background: T.surfaceBg, borderRadius: 8, padding: 12, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+              {form.events.map((ev, i) => (
+                <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                  <input style={{ ...IS, width: 130, fontSize: 12 }} type="date" value={ev.date}
+                    onChange={e => { const evs = [...form.events]; evs[i] = { ...evs[i], date: e.target.value }; set("events", evs); }} />
+                  <input style={{ ...IS, flex: 1, fontSize: 12 }} placeholder="Description" value={ev.label}
+                    onChange={e => { const evs = [...form.events]; evs[i] = { ...evs[i], label: e.target.value }; set("events", evs); }} />
+                  <button onClick={() => set("events", form.events.filter((_, j) => j !== i))}
+                    style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: "0 2px", flexShrink: 0 }}>✕</button>
+                </div>
+              ))}
+              <button onClick={() => set("events", [...form.events, { date: "", label: "" }])}
+                style={{ fontSize: 12, color: T.gold, background: "none", border: `1px dashed ${T.gold}66`, borderRadius: 5, padding: "4px 10px", cursor: "pointer", width: "100%", marginTop: form.events.length ? 4 : 0 }}>
+                + Add Event
+              </button>
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>News & Updates</div>
+            <div style={{ background: T.surfaceBg, borderRadius: 8, padding: 12, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+              {form.news.map((item, i) => (
+                <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                  <input style={{ ...IS, flex: 1, fontSize: 12 }} placeholder="Headline" value={item.text}
+                    onChange={e => { const n = [...form.news]; n[i] = { ...n[i], text: e.target.value }; set("news", n); }} />
+                  <input style={{ ...IS, width: 120, fontSize: 12 }} type="date" value={item.date}
+                    onChange={e => { const n = [...form.news]; n[i] = { ...n[i], date: e.target.value }; set("news", n); }} />
+                  <button onClick={() => set("news", form.news.filter((_, j) => j !== i))}
+                    style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: "0 2px", flexShrink: 0 }}>✕</button>
+                </div>
+              ))}
+              <button onClick={() => set("news", [...form.news, { text: "", date: "" }])}
+                style={{ fontSize: 12, color: T.gold, background: "none", border: `1px dashed ${T.gold}66`, borderRadius: 5, padding: "4px 10px", cursor: "pointer", width: "100%", marginTop: form.news.length ? 4 : 0 }}>
+                + Add News
+              </button>
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Notes</div>
+            <textarea style={{ ...IS, height: 68, resize: "vertical" }} placeholder="Additional notes..." value={form.notes} onChange={e => set("notes", e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, paddingTop: 16, borderTop: `1px solid ${T.border}` }}>
+          <button style={{ ...BSS, fontSize: 12 }} onClick={() => setShowImport(true)}>⬇ Import from Investment Hub</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={BSS} onClick={onClose}>Cancel</button>
+            <button style={BP} onClick={handleSave}>Save Card</button>
+          </div>
+        </div>
+      </Modal>
+      <ImportSuggestionsModal open={showImport} onClose={() => setShowImport(false)} onImport={handleImport} T={T} />
+    </>
+  );
+}
+
 // ─── Main App ───
 export default function PortfolioTracker() {
   const [data, setData] = useState(INITIAL_DATA);
@@ -563,6 +924,9 @@ export default function PortfolioTracker() {
   const [marketFilter, setMarketFilter] = useState("all");
   const [showLogin, setShowLogin] = useState(false);
   const [syncStatus, setSyncStatus] = useState("synced");
+  const [showCardModal, setShowCardModal] = useState(false);
+  const [selectedCard, setSelectedCard] = useState(null);
+  const [showWatchAddModal, setShowWatchAddModal] = useState(false);
 
   const toggleTheme = () => {
     const next = !dark;
@@ -575,6 +939,10 @@ export default function PortfolioTracker() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) setShowLogin(true);
       const d = await loadData();
+      if (d) {
+        if (!d.stockCards) d.stockCards = {};
+        if (!d.watchList) d.watchList = [];
+      }
       if (d && d.transactions && d.transactions.length > 0) {
         setData(d);
       } else {
@@ -629,6 +997,10 @@ export default function PortfolioTracker() {
   const deleteTopup = (id) => persist({ ...data, topups: data.topups.filter(t => t.id !== id) });
   const updatePrices = (p) => persist({ ...data, currentPrices: p });
   const updateFx = (r) => persist({ ...data, fxRates: { ...data.fxRates, ...r } });
+  const saveStockCard = (key, updates) => persist({ ...data, stockCards: { ...(data.stockCards || {}), [key]: { ...(data.stockCards?.[key] || {}), ...updates } } });
+  const saveWatchItem = (id, updates) => persist({ ...data, watchList: (data.watchList || []).map(w => w.id === id ? { ...w, ...updates } : w) });
+  const addWatchItem = (item) => persist({ ...data, watchList: [...(data.watchList || []), item] });
+  const deleteWatchItem = (id) => persist({ ...data, watchList: (data.watchList || []).filter(w => w.id !== id) });
 
   // ─── Computed Analytics ───
   const analytics = useMemo(() => {
@@ -730,6 +1102,7 @@ export default function PortfolioTracker() {
   const TABS = [
     { id: "dashboard", label: "Dashboard", icon: "◉" },
     { id: "holdings", label: "Holdings", icon: "◈" },
+    { id: "cards", label: "Stock Cards", icon: "⊞" },
     { id: "transactions", label: "Transactions", icon: "⟳" },
     { id: "wallets", label: "Wallets", icon: "◇" },
   ];
@@ -936,7 +1309,12 @@ export default function PortfolioTracker() {
                       .map(h => {
                         const mkt = MARKETS.find(m => m.id === h.market);
                         return (
-                          <tr key={`${h.market}:${h.ticker}`} style={{ borderBottom: `1px solid ${T.divider}` }}>
+                          <tr key={`${h.market}:${h.ticker}`}
+                            style={{ borderBottom: `1px solid ${T.divider}`, cursor: "pointer" }}
+                            onClick={() => { setSelectedCard({ type: "holding", key: `${h.market}:${h.ticker}` }); setShowCardModal(true); }}
+                            onMouseEnter={e => e.currentTarget.style.background = T.surfaceBg}
+                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                          >
                             <td style={{ padding: "10px 12px", whiteSpace: "nowrap", color: T.text }}>{mkt?.flag} {mkt?.id.toUpperCase()}</td>
                             <td style={{ padding: "10px 12px", fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.text }}>{h.ticker}</td>
                             <td style={{ padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", color: T.textSub }}>{formatNum(h.qty, h.qty < 1 ? 6 : 2)}</td>
@@ -965,6 +1343,127 @@ export default function PortfolioTracker() {
                       })}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ═══ STOCK CARDS ═══ */}
+        {tab === "cards" && (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.textMuted, letterSpacing: "0.6px", textTransform: "uppercase" }}>
+                Holdings ({analytics.holdings.length})
+              </h3>
+              <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => {
+                let text = `=== PORTFOLIO SUMMARY (${new Date().toLocaleDateString("en-GB")}) ===\n\n`;
+                MARKETS.forEach(m => {
+                  const hs = analytics.holdings.filter(h => h.market === m.id);
+                  if (hs.length === 0) return;
+                  text += `${m.flag} ${m.name} (${m.currency})\n`;
+                  hs.forEach(h => {
+                    const card = data.stockCards?.[`${h.market}:${h.ticker}`] || {};
+                    text += `  ${h.ticker}: ${formatNum(h.qty, h.qty < 1 ? 6 : 2)} @ ${formatNum(h.avgCost)} ${h.currency}`;
+                    if (h.currentPrice != null) text += ` | Current: ${formatNum(h.currentPrice)} | P&L: ${h.unrealizedPL >= 0 ? "+" : ""}${formatNum(h.unrealizedPL)} (${h.unrealizedPct >= 0 ? "+" : ""}${formatNum(h.unrealizedPct, 1)}%)`;
+                    if (card.t1) text += ` | T1: ${card.t1}`;
+                    if (card.t2) text += ` | T2: ${card.t2}`;
+                    if (card.stopLoss) text += ` | SL: ${card.stopLoss}`;
+                    text += "\n";
+                  });
+                  text += "\n";
+                });
+                navigator.clipboard.writeText(text);
+                alert("Portfolio summary copied! Paste it in your Investment Hub conversation.");
+              }}>📤 Export to Investment Hub</button>
+            </div>
+
+            {analytics.holdings.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", color: T.textMuted }}>No open positions yet. Add a trade to get started.</div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 32 }}>
+                {analytics.holdings.map(h => {
+                  const key = `${h.market}:${h.ticker}`;
+                  const card = data.stockCards?.[key] || {};
+                  const mkt = MARKETS.find(m => m.id === h.market);
+                  const plPos = h.unrealizedPL != null && h.unrealizedPL >= 0;
+                  return (
+                    <div key={key}
+                      onClick={() => { setSelectedCard({ type: "holding", key }); setShowCardModal(true); }}
+                      style={{ background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 10, padding: 14, cursor: "pointer" }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = T.gold}
+                      onMouseLeave={e => e.currentTarget.style.borderColor = T.border}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 16 }}>{mkt?.flag}</span>
+                          <span style={{ fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.text, fontSize: 15 }}>{h.ticker}</span>
+                        </div>
+                        {h.unrealizedPct != null && (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: plPos ? T.green : T.red, background: plPos ? T.greenSoft : T.redSoft, padding: "2px 7px", borderRadius: 4 }}>
+                            {h.unrealizedPct >= 0 ? "+" : ""}{formatNum(h.unrealizedPct, 1)}%
+                          </span>
+                        )}
+                      </div>
+                      {(card.t1 || card.t2 || card.stopLoss) && (
+                        <div style={{ display: "flex", gap: 5, marginBottom: 6, flexWrap: "wrap" }}>
+                          {card.t1 && <span style={{ fontSize: 11, color: T.gold, background: T.goldSoft, padding: "1px 6px", borderRadius: 3 }}>T1 {card.t1}</span>}
+                          {card.t2 && <span style={{ fontSize: 11, color: T.gold, background: T.goldSoft, padding: "1px 6px", borderRadius: 3 }}>T2 {card.t2}</span>}
+                          {card.stopLoss && <span style={{ fontSize: 11, color: T.red, background: T.redSoft, padding: "1px 6px", borderRadius: 3 }}>SL {card.stopLoss}</span>}
+                        </div>
+                      )}
+                      {card.notes
+                        ? <p style={{ fontSize: 12, color: T.textMuted, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.notes}</p>
+                        : <p style={{ fontSize: 12, color: T.textDim, margin: 0 }}>Click to add card details</p>
+                      }
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.textMuted, letterSpacing: "0.6px", textTransform: "uppercase" }}>
+                Watch List ({(data.watchList || []).length})
+              </h3>
+              <button style={{ ...BP, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowWatchAddModal(true)}>+ Add to Watch List</button>
+            </div>
+
+            {(data.watchList || []).length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", color: T.textMuted, border: `2px dashed ${T.border}`, borderRadius: 10 }}>
+                <div style={{ fontSize: 24, marginBottom: 8 }}>👁</div>
+                <div>Watch List is empty. Add stocks you are tracking.</div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+                {(data.watchList || []).map(w => {
+                  const mkt = MARKETS.find(m => m.id === w.market);
+                  return (
+                    <div key={w.id}
+                      onClick={() => { setSelectedCard({ type: "watch", id: w.id }); setShowCardModal(true); }}
+                      style={{ background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 10, padding: 14, cursor: "pointer" }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = T.gold}
+                      onMouseLeave={e => e.currentTarget.style.borderColor = T.border}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 16 }}>{mkt?.flag}</span>
+                          <div>
+                            <span style={{ fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.text, fontSize: 15 }}>{w.ticker}</span>
+                            {w.name && <span style={{ fontSize: 11, color: T.textMuted, marginLeft: 6 }}>{w.name}</span>}
+                          </div>
+                        </div>
+                        <button onClick={e => { e.stopPropagation(); deleteWatchItem(w.id); }} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 13, padding: "0 2px" }}>🗑</button>
+                      </div>
+                      {(w.t1 || w.t2 || w.stopLoss) && (
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                          {w.t1 && <span style={{ fontSize: 11, color: T.gold, background: T.goldSoft, padding: "1px 6px", borderRadius: 3 }}>T1 {w.t1}</span>}
+                          {w.t2 && <span style={{ fontSize: 11, color: T.gold, background: T.goldSoft, padding: "1px 6px", borderRadius: 3 }}>T2 {w.t2}</span>}
+                          {w.stopLoss && <span style={{ fontSize: 11, color: T.red, background: T.redSoft, padding: "1px 6px", borderRadius: 3 }}>SL {w.stopLoss}</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </>
@@ -1130,6 +1629,24 @@ export default function PortfolioTracker() {
           setDeleteTarget(null);
         }}
       />
+      <StockCardModal
+        open={showCardModal}
+        onClose={() => { setShowCardModal(false); setSelectedCard(null); }}
+        holding={selectedCard?.type === "holding" ? analytics.holdings.find(h => `${h.market}:${h.ticker}` === selectedCard.key) : null}
+        cardData={
+          selectedCard?.type === "holding"
+            ? (data.stockCards?.[selectedCard.key] || {})
+            : selectedCard?.type === "watch"
+              ? ((data.watchList || []).find(w => w.id === selectedCard.id) || {})
+              : {}
+        }
+        onSave={(formData) => {
+          if (selectedCard?.type === "holding") saveStockCard(selectedCard.key, formData);
+          else if (selectedCard?.type === "watch") saveWatchItem(selectedCard.id, formData);
+        }}
+        T={T}
+      />
+      <WatchListAddModal open={showWatchAddModal} onClose={() => setShowWatchAddModal(false)} onSave={addWatchItem} T={T} />
     </div>
   );
 }
