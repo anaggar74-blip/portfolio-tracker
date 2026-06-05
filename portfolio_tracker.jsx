@@ -482,6 +482,7 @@ function LoginModal({ T }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!email || !password) { setError("Please enter your email and password."); return; }
     setBusy(true);
     setError("");
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -517,7 +518,7 @@ function LoginModal({ T }) {
               placeholder="••••••••" />
           </Field>
           {error && <p style={{ color: T.red, fontSize: 13, margin: "0 0 12px" }}>{error}</p>}
-          <button style={{ ...BP, width: "100%", marginTop: 4 }} type="submit" disabled={busy}>
+          <button style={{ ...BP, width: "100%", marginTop: 4, opacity: busy ? 0.6 : 1, cursor: busy ? "not-allowed" : "pointer" }} type="submit" disabled={busy}>
             {busy ? "Signing in…" : "Sign In"}
           </button>
         </form>
