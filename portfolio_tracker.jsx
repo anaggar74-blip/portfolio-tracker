@@ -471,6 +471,61 @@ function ThemeToggle({ dark, onToggle, T }) {
   );
 }
 
+// ─── Login Modal ───
+function LoginModal({ T }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const IS = mkInput(T);
+  const BP = mkBtnPrimary(T);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) { setError(error.message); setBusy(false); }
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 2000,
+      background: T.mainBg, display: "flex",
+      alignItems: "center", justifyContent: "center", padding: 20,
+      fontFamily: "'DM Sans', sans-serif",
+    }}>
+      <div style={{
+        background: T.cardBg, border: `1px solid ${T.border}`,
+        borderRadius: 12, width: "100%", maxWidth: 360, padding: 28,
+        boxShadow: "0 24px 48px rgba(0,0,0,0.35)",
+      }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📊</div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: T.text }}>Portfolio Tracker</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 13, color: T.textMuted }}>Sign in to sync your portfolio</p>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <Field label="Email" T={T}>
+            <input style={IS} type="email" value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="you@example.com" autoFocus />
+          </Field>
+          <Field label="Password" T={T}>
+            <input style={IS} type="password" value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••" />
+          </Field>
+          {error && <p style={{ color: T.red, fontSize: 13, margin: "0 0 12px" }}>{error}</p>}
+          <button style={{ ...BP, width: "100%", marginTop: 4 }} type="submit" disabled={busy}>
+            {busy ? "Signing in…" : "Sign In"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ───
 export default function PortfolioTracker() {
   const [data, setData] = useState(INITIAL_DATA);
