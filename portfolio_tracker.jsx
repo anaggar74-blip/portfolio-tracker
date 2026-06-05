@@ -710,6 +710,8 @@ export default function PortfolioTracker() {
     return { holdings, closed, marketStats, totalInvestedUSD, totalValueUSD, totalRealizedUSD, totalUnrealizedUSD, totalCashUSD, totalDepositsUSD, bucketAlloc };
   }, [data]);
 
+  if (showLogin) return <LoginModal T={T} />;
+
   if (loading) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: T.mainBg, color: T.textMuted, fontFamily: "'DM Sans', sans-serif" }}>
@@ -759,6 +761,7 @@ export default function PortfolioTracker() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <SyncStatus status={syncStatus} T={T} />
           <ThemeToggle dark={dark} onToggle={toggleTheme} T={T} />
           <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowFxModal(true)}>💱 FX Rates</button>
           <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowPriceModal(true)}>📈 Update Prices</button>
