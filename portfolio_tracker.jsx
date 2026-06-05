@@ -1,4 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 const MARKETS = [
   { id: "egx", name: "EGX (Egypt)", currency: "EGP", flag: "🇪🇬" },
@@ -28,15 +34,42 @@ const THEME_KEY = "portfolio-theme-v1";
 
 async function loadData() {
   try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session && navigator.onLine) {
+      const { data: row, error } = await supabase
+        .from("portfolio_data")
+        .select("data")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+      if (!error && row) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(row.data));
+        return row.data;
+      }
+    }
+  } catch {}
+  try {
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
 
-async function saveData(data) {
+async function saveData(payload) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch (e) { console.error("Save failed:", e); }
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session || !navigator.onLine) return "offline";
+    const { error } = await supabase
+      .from("portfolio_data")
+      .upsert(
+        { user_id: session.user.id, data: payload, updated_at: new Date().toISOString() },
+        { onConflict: "user_id" }
+      );
+    return error ? "offline" : "synced";
+  } catch {
+    return "offline";
+  }
 }
 
 const SEED_DATA = {
