@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -27,6 +27,18 @@ const formatDate = (d) => {
   const dt = new Date(d);
   return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 };
+
+const timeAgo = (iso) => {
+  if (!iso) return "never";
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
+
+// Markets we cannot auto-fetch (no reliable free EGX/ADX price feed) — these stay manual.
+const MANUAL_MARKETS = ["egx", "adx"];
 
 const DEFAULT_FX = { USD: 1, USDT: 1, EGP: 0.0196, AED: 0.2723 };
 const STORAGE_KEY = "portfolio-tracker-v6";
@@ -927,6 +939,7 @@ export default function PortfolioTracker() {
   const [showCardModal, setShowCardModal] = useState(false);
   const [selectedCard, setSelectedCard] = useState(null);
   const [showWatchAddModal, setShowWatchAddModal] = useState(false);
+  const [fetchingPrices, setFetchingPrices] = useState(false);
 
   const toggleTheme = () => {
     const next = !dark;
@@ -995,7 +1008,13 @@ export default function PortfolioTracker() {
   const addTopup = (t) => persist({ ...data, topups: [...data.topups, t] });
   const deleteTransaction = (id) => persist({ ...data, transactions: data.transactions.filter(t => t.id !== id) });
   const deleteTopup = (id) => persist({ ...data, topups: data.topups.filter(t => t.id !== id) });
-  const updatePrices = (p) => persist({ ...data, currentPrices: p });
+  const updatePrices = (p) => {
+    // Stamp every price the user actually changed so manual (EGX/ADX) staleness can be shown.
+    const now = new Date().toISOString();
+    const edited = { ...(data.priceEditedAt || {}) };
+    Object.keys(p).forEach(k => { if (p[k] !== (data.currentPrices || {})[k]) edited[k] = now; });
+    persist({ ...data, currentPrices: p, priceEditedAt: edited });
+  };
   const updateFx = (r) => persist({ ...data, fxRates: { ...data.fxRates, ...r } });
   const saveStockCard = (key, updates) => persist({ ...data, stockCards: { ...(data.stockCards || {}), [key]: { ...(data.stockCards?.[key] || {}), ...updates } } });
   const saveWatchItem = (id, updates) => persist({ ...data, watchList: (data.watchList || []).map(w => w.id === id ? { ...w, ...updates } : w) });
@@ -1082,6 +1101,44 @@ export default function PortfolioTracker() {
     return { holdings, closed, marketStats, totalInvestedUSD, totalValueUSD, totalRealizedUSD, totalUnrealizedUSD, totalCashUSD, totalDepositsUSD, bucketAlloc };
   }, [data]);
 
+  // ─── Live Price + FX Auto-Fetch (via Netlify Function proxy) ───
+  const refreshPrices = async () => {
+    if (fetchingPrices) return;
+    const open = analytics.holdings.filter(h => h.qty > 0.0001);
+    const stocks = [...new Set(open.filter(h => h.market === "us").map(h => h.ticker))];
+    const crypto = [...new Set(open.filter(h => h.market === "crypto").map(h => h.ticker))];
+    const fx = ["AED", "EGP"];
+    setFetchingPrices(true);
+    try {
+      const res = await fetch("/.netlify/functions/prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stocks, crypto, fx }),
+      });
+      const out = await res.json();
+      persist({
+        ...data,
+        currentPrices: { ...data.currentPrices, ...(out.prices || {}) },
+        fxRates: { ...data.fxRates, ...(out.fxRates || {}) },
+        priceMeta: { lastFetchedAt: out.fetchedAt || new Date().toISOString(), errors: out.errors || [] },
+      });
+    } catch (e) {
+      persist({ ...data, priceMeta: { lastFetchedAt: data.priceMeta?.lastFetchedAt || null, errors: ["Network error — could not reach price service"] } });
+    } finally {
+      setFetchingPrices(false);
+    }
+  };
+
+  // Auto-fetch once after data loads, only if cached prices are older than 10 minutes.
+  const didAutoFetch = useRef(false);
+  useEffect(() => {
+    if (loading || didAutoFetch.current) return;
+    didAutoFetch.current = true;
+    const last = data.priceMeta?.lastFetchedAt;
+    const stale = !last || (Date.now() - new Date(last).getTime() > 10 * 60 * 1000);
+    if (stale) refreshPrices();
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (showLogin) return <LoginModal T={T} />;
 
   if (loading) {
@@ -1135,6 +1192,14 @@ export default function PortfolioTracker() {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <SyncStatus status={syncStatus} T={T} />
+          <span style={{ fontSize: 11, color: T.textMuted, whiteSpace: "nowrap" }}>
+            {fetchingPrices ? "fetching prices…" : `prices ${timeAgo(data.priceMeta?.lastFetchedAt)}`}
+          </span>
+          <button
+            style={{ ...BSS, fontSize: 12, padding: "7px 14px", opacity: fetchingPrices ? 0.6 : 1 }}
+            disabled={fetchingPrices}
+            onClick={refreshPrices}
+          >{fetchingPrices ? "⏳ Refreshing" : "🔄 Refresh"}</button>
           <ThemeToggle dark={dark} onToggle={toggleTheme} T={T} />
           <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowFxModal(true)}>💱 FX Rates</button>
           <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowPriceModal(true)}>📈 Update Prices</button>
@@ -1142,6 +1207,16 @@ export default function PortfolioTracker() {
           <button style={{ ...BP, fontSize: 12, padding: "7px 14px", background: T.green, color: "#fff" }} onClick={() => setShowTxModal(true)}>＋ Trade</button>
         </div>
       </div>
+
+      {/* Price fetch error bar */}
+      {data.priceMeta?.errors?.length > 0 && (
+        <div style={{
+          padding: "8px 22px", background: T.red, color: "#fff",
+          fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
+        }}>
+          ⚠ Some prices couldn't be updated ({data.priceMeta.errors.length}). EGX/ADX are always manual; others use the last known value.
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{
@@ -1321,6 +1396,14 @@ export default function PortfolioTracker() {
                             <td style={{ padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", color: T.textSub }}>{formatNum(h.avgCost)}</td>
                             <td style={{ padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", color: h.currentPrice !== null ? T.text : T.textMuted }}>
                               {h.currentPrice !== null ? formatNum(h.currentPrice) : "—"}
+                              {MANUAL_MARKETS.includes(h.market) && (
+                                <span title="No live feed for this market — price is entered manually" style={{
+                                  display: "block", marginTop: 3, fontSize: 9, fontWeight: 700, letterSpacing: "0.3px",
+                                  textTransform: "uppercase", color: T.red, fontFamily: "system-ui, sans-serif",
+                                }}>
+                                  ● manual · {timeAgo(data.priceEditedAt?.[`${h.market}:${h.ticker}`])}
+                                </span>
+                              )}
                             </td>
                             <td style={{ padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", color: T.text }}>
                               {h.currentValue !== null ? formatNum(h.currentValue) : formatNum(h.costBasis)}
