@@ -843,6 +843,28 @@ function StockCardModal({ open, onClose, holding, cardData, onSave, T }) {
               ))}
             </div>
 
+            {(() => {
+              const t1v = parseFloat(form.t1);
+              const slv = parseFloat(form.stopLoss);
+              const cur = holding?.currentPrice;
+              if (t1v && slv && cur && t1v > cur && cur > slv) {
+                const reward = t1v - cur;
+                const risk = cur - slv;
+                const rr = (reward / risk).toFixed(2);
+                const color = parseFloat(rr) >= 2 ? T.green : parseFloat(rr) >= 1 ? T.gold : T.red;
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "8px 12px", background: T.surfaceBg, borderRadius: 6, border: `1px solid ${T.border}` }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" }}>R:R</span>
+                    <span style={{ fontSize: 15, fontWeight: 700, color, fontFamily: "'JetBrains Mono', monospace" }}>1 : {rr}</span>
+                    <span style={{ fontSize: 11, color: T.textMuted, marginLeft: 4 }}>
+                      ↑ +{formatNum(reward)} &nbsp;/&nbsp; ↓ −{formatNum(risk)}
+                    </span>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
             <Field label="Strategy" T={T}>
               <input style={IS} placeholder="Swing, Long-term, Value..." value={form.strategy} onChange={e => set("strategy", e.target.value)} />
             </Field>
@@ -1405,6 +1427,16 @@ export default function PortfolioTracker() {
         {/* ═══ HOLDINGS ═══ */}
         {tab === "holdings" && (
           <>
+            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 11, color: T.textMuted }}>
+                {fetchingPrices ? "fetching prices…" : `US/Crypto: ${timeAgo(data.priceMeta?.lastFetchedAt)}`}
+              </span>
+              <button
+                style={{ ...BSS, fontSize: 12, padding: "6px 14px", opacity: fetchingPrices ? 0.6 : 1 }}
+                disabled={fetchingPrices}
+                onClick={refreshPrices}
+              >{fetchingPrices ? "⏳ Refreshing…" : "🔄 Refresh Prices"}</button>
+            </div>
             {analytics.holdings.filter(h => marketFilter === "all" || h.market === marketFilter).length === 0 ? (
               <div style={{ textAlign: "center", padding: "60px 20px", color: T.textMuted }}>
                 <div style={{ fontSize: 36, marginBottom: 12 }}>📭</div>
@@ -1420,18 +1452,19 @@ export default function PortfolioTracker() {
                         { key: "qty", label: "Qty" }, { key: "avgCost", label: "Avg Cost" },
                         { key: "current", label: "Current" }, { key: "value", label: "Value" },
                         { key: "pl", label: "P&L" }, { key: "plPct", label: "P&L %" },
+                        { key: "plUSD", label: "P&L (USD)" },
                         { key: "bucket", label: "Bucket" },
                       ].map(({ key, label }) => (
                         <th key={key}
-                          onClick={() => key !== "bucket" && setHoldingsSort(s => ({ col: key, dir: s.col === key && s.dir === "desc" ? "asc" : "desc" }))}
+                          onClick={() => key !== "bucket" && key !== "plUSD" && setHoldingsSort(s => ({ col: key, dir: s.col === key && s.dir === "desc" ? "asc" : "desc" }))}
                           style={{
                             textAlign: "left", padding: "10px 12px", fontSize: 11,
                             color: holdingsSort.col === key ? T.gold : T.textMuted,
                             fontWeight: 600, borderBottom: `1px solid ${T.border}`,
                             textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap",
-                            cursor: key !== "bucket" ? "pointer" : "default", userSelect: "none",
+                            cursor: key !== "bucket" && key !== "plUSD" ? "pointer" : "default", userSelect: "none",
                           }}>
-                          {label}{key !== "bucket" && holdingsSort.col === key && <span style={{ marginLeft: 4 }}>{holdingsSort.dir === "asc" ? "↑" : "↓"}</span>}
+                          {label}{key !== "bucket" && key !== "plUSD" && holdingsSort.col === key && <span style={{ marginLeft: 4 }}>{holdingsSort.dir === "asc" ? "↑" : "↓"}</span>}
                         </th>
                       ))}
                     </tr>
@@ -1493,6 +1526,19 @@ export default function PortfolioTracker() {
                             }}>
                               {h.unrealizedPct !== null ? `${h.unrealizedPct >= 0 ? "+" : ""}${formatNum(h.unrealizedPct, 1)}%` : "—"}
                             </td>
+                            {(() => {
+                              const mktCur = MARKETS.find(m => m.id === h.market)?.currency;
+                              const fx = (data.fxRates?.[mktCur] ?? DEFAULT_FX[mktCur] ?? 1);
+                              const plUSD = h.unrealizedPL !== null ? h.unrealizedPL * fx : null;
+                              return (
+                                <td style={{
+                                  padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, fontSize: 12,
+                                  color: plUSD !== null ? (plUSD >= 0 ? T.green : T.red) : T.textMuted,
+                                }}>
+                                  {plUSD !== null ? `${plUSD >= 0 ? "+" : ""}$${formatNum(Math.abs(plUSD))}` : "—"}
+                                </td>
+                              );
+                            })()}
                             <td style={{ padding: "6px 12px" }} onClick={e => e.stopPropagation()}>
                               <select
                                 value={data.holdingBuckets?.[`${h.market}:${h.ticker}`] || h.bucket}
