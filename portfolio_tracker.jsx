@@ -918,6 +918,45 @@ function StockCardModal({ open, onClose, holding, cardData, onSave, T }) {
   );
 }
 
+// ─── Data Import Modal ───
+function DataImportModal({ open, onClose, onImport, T }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const IS = mkInput(T), BP = mkBtnPrimary(T), BSS = mkBtnSecondary(T);
+
+  const handleImport = () => {
+    setError("");
+    try {
+      const parsed = JSON.parse(text.trim());
+      if (!Array.isArray(parsed.transactions)) { setError("Invalid data: missing transactions array."); return; }
+      onImport(parsed);
+      setText("");
+      onClose();
+    } catch {
+      setError("Invalid JSON — make sure you copied the full output from Investment Hub.");
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={() => { setText(""); setError(""); onClose(); }} title="Import Portfolio Data" T={T} maxWidth={560}>
+      <p style={{ fontSize: 13, color: T.textMuted, margin: "0 0 10px" }}>
+        Paste the JSON you got from your Investment Hub conversation below.
+      </p>
+      <textarea
+        style={{ ...IS, height: 220, resize: "vertical", fontFamily: "monospace", fontSize: 12 }}
+        placeholder='{ "transactions": [...], "topups": [...], ... }'
+        value={text}
+        onChange={e => { setText(e.target.value); setError(""); }}
+      />
+      {error && <p style={{ color: "#e74c3c", fontSize: 12, margin: "6px 0 0" }}>{error}</p>}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+        <button style={BSS} onClick={() => { setText(""); setError(""); onClose(); }}>Cancel</button>
+        <button style={BP} onClick={handleImport}>Load Data</button>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── Main App ───
 export default function PortfolioTracker() {
   const [data, setData] = useState(INITIAL_DATA);
@@ -940,6 +979,7 @@ export default function PortfolioTracker() {
   const [selectedCard, setSelectedCard] = useState(null);
   const [showWatchAddModal, setShowWatchAddModal] = useState(false);
   const [fetchingPrices, setFetchingPrices] = useState(false);
+  const [showDataImport, setShowDataImport] = useState(false);
 
   const toggleTheme = () => {
     const next = !dark;
@@ -1438,26 +1478,13 @@ export default function PortfolioTracker() {
               <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.textMuted, letterSpacing: "0.6px", textTransform: "uppercase" }}>
                 Holdings ({analytics.holdings.length})
               </h3>
-              <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => {
-                let text = `=== PORTFOLIO SUMMARY (${new Date().toLocaleDateString("en-GB")}) ===\n\n`;
-                MARKETS.forEach(m => {
-                  const hs = analytics.holdings.filter(h => h.market === m.id);
-                  if (hs.length === 0) return;
-                  text += `${m.flag} ${m.name} (${m.currency})\n`;
-                  hs.forEach(h => {
-                    const card = data.stockCards?.[`${h.market}:${h.ticker}`] || {};
-                    text += `  ${h.ticker}: ${formatNum(h.qty, h.qty < 1 ? 6 : 2)} @ ${formatNum(h.avgCost)} ${h.currency}`;
-                    if (h.currentPrice != null) text += ` | Current: ${formatNum(h.currentPrice)} | P&L: ${h.unrealizedPL >= 0 ? "+" : ""}${formatNum(h.unrealizedPL)} (${h.unrealizedPct >= 0 ? "+" : ""}${formatNum(h.unrealizedPct, 1)}%)`;
-                    if (card.t1) text += ` | T1: ${card.t1}`;
-                    if (card.t2) text += ` | T2: ${card.t2}`;
-                    if (card.stopLoss) text += ` | SL: ${card.stopLoss}`;
-                    text += "\n";
-                  });
-                  text += "\n";
-                });
-                navigator.clipboard.writeText(text);
-                alert("Portfolio summary copied! Paste it in your Investment Hub conversation.");
-              }}>📤 Export to Investment Hub</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => {
+                  navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+                  alert("Full portfolio data copied as JSON!\n\nPaste it in your Investment Hub and ask:\n\"Update my portfolio with this data.\"");
+                }}>📤 Export JSON</button>
+                <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowDataImport(true)}>📥 Import JSON</button>
+              </div>
             </div>
 
             {analytics.holdings.length === 0 ? (
@@ -1701,6 +1728,7 @@ export default function PortfolioTracker() {
       <UpdatePriceModal open={showPriceModal} onClose={() => setShowPriceModal(false)}
         holdings={analytics.holdings} currentPrices={data.currentPrices} onSave={updatePrices} T={T} />
       <FxRatesModal open={showFxModal} onClose={() => setShowFxModal(false)} fxRates={data.fxRates} onSave={updateFx} T={T} />
+      <DataImportModal open={showDataImport} onClose={() => setShowDataImport(false)} onImport={d => persist({ ...INITIAL_DATA, ...d })} T={T} />
       <ConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
