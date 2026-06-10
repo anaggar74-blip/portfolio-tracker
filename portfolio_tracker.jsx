@@ -135,9 +135,10 @@ const SEED_DATA = {
   },
   stockCards: {},
   watchList: [],
+  holdingBuckets: {},
 };
 
-const INITIAL_DATA = { transactions: [], topups: [], fxRates: DEFAULT_FX, currentPrices: {}, stockCards: {}, watchList: [] };
+const INITIAL_DATA = { transactions: [], topups: [], fxRates: DEFAULT_FX, currentPrices: {}, stockCards: {}, watchList: [], holdingBuckets: {} };
 
 // ─── Mackenzy Colour Standard ───
 const DARK = {
@@ -978,6 +979,7 @@ export default function PortfolioTracker() {
   const [showCardModal, setShowCardModal] = useState(false);
   const [selectedCard, setSelectedCard] = useState(null);
   const [showWatchAddModal, setShowWatchAddModal] = useState(false);
+  const [holdingsSort, setHoldingsSort] = useState({ col: "value", dir: "desc" });
   const [fetchingPrices, setFetchingPrices] = useState(false);
   const [showDataImport, setShowDataImport] = useState(false);
 
@@ -995,6 +997,7 @@ export default function PortfolioTracker() {
       if (d) {
         if (!d.stockCards) d.stockCards = {};
         if (!d.watchList) d.watchList = [];
+        if (!d.holdingBuckets) d.holdingBuckets = {};
       }
       if (d && d.transactions && d.transactions.length > 0) {
         setData(d);
@@ -1060,6 +1063,7 @@ export default function PortfolioTracker() {
   const saveWatchItem = (id, updates) => persist({ ...data, watchList: (data.watchList || []).map(w => w.id === id ? { ...w, ...updates } : w) });
   const addWatchItem = (item) => persist({ ...data, watchList: [...(data.watchList || []), item] });
   const deleteWatchItem = (id) => persist({ ...data, watchList: (data.watchList || []).filter(w => w.id !== id) });
+  const saveHoldingBucket = (key, bucket) => persist({ ...data, holdingBuckets: { ...(data.holdingBuckets || {}), [key]: bucket } });
 
   // ─── Computed Analytics ───
   const analytics = useMemo(() => {
@@ -1083,9 +1087,11 @@ export default function PortfolioTracker() {
       }
     });
 
+    const holdingBuckets = data.holdingBuckets || {};
     const holdings = Object.values(holdingMap).filter(h => h.qty > 0.0001);
     holdings.forEach(h => {
       const key = `${h.market}:${h.ticker}`;
+      if (holdingBuckets[key]) h.bucket = holdingBuckets[key];
       const cp = parseFloat(prices[key]);
       h.currentPrice = isNaN(cp) ? null : cp;
       h.currentValue = h.currentPrice !== null ? h.qty * h.currentPrice : null;
@@ -1175,7 +1181,8 @@ export default function PortfolioTracker() {
     if (loading || didAutoFetch.current) return;
     didAutoFetch.current = true;
     const last = data.priceMeta?.lastFetchedAt;
-    const stale = !last || (Date.now() - new Date(last).getTime() > 10 * 60 * 1000);
+    const lastDate = last ? new Date(last).toDateString() : null;
+    const stale = !last || lastDate !== new Date().toDateString() || (Date.now() - new Date(last).getTime() > 4 * 60 * 60 * 1000);
     if (stale) refreshPrices();
   }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1408,19 +1415,45 @@ export default function PortfolioTracker() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr>
-                      {["Market", "Ticker", "Qty", "Avg Cost", "Current", "Value", "P&L", "P&L %", "Bucket"].map(h => (
-                        <th key={h} style={{
-                          textAlign: "left", padding: "10px 12px", fontSize: 11,
-                          color: T.textMuted, fontWeight: 600, borderBottom: `1px solid ${T.border}`,
-                          textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap",
-                        }}>{h}</th>
+                      {[
+                        { key: "market", label: "Market" }, { key: "ticker", label: "Ticker" },
+                        { key: "qty", label: "Qty" }, { key: "avgCost", label: "Avg Cost" },
+                        { key: "current", label: "Current" }, { key: "value", label: "Value" },
+                        { key: "pl", label: "P&L" }, { key: "plPct", label: "P&L %" },
+                        { key: "bucket", label: "Bucket" },
+                      ].map(({ key, label }) => (
+                        <th key={key}
+                          onClick={() => key !== "bucket" && setHoldingsSort(s => ({ col: key, dir: s.col === key && s.dir === "desc" ? "asc" : "desc" }))}
+                          style={{
+                            textAlign: "left", padding: "10px 12px", fontSize: 11,
+                            color: holdingsSort.col === key ? T.gold : T.textMuted,
+                            fontWeight: 600, borderBottom: `1px solid ${T.border}`,
+                            textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap",
+                            cursor: key !== "bucket" ? "pointer" : "default", userSelect: "none",
+                          }}>
+                          {label}{key !== "bucket" && holdingsSort.col === key && <span style={{ marginLeft: 4 }}>{holdingsSort.dir === "asc" ? "↑" : "↓"}</span>}
+                        </th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {analytics.holdings
                       .filter(h => marketFilter === "all" || h.market === marketFilter)
-                      .sort((a, b) => (b.currentValue ?? b.costBasis) - (a.currentValue ?? a.costBasis))
+                      .slice()
+                      .sort((a, b) => {
+                        const { col, dir } = holdingsSort;
+                        let av, bv;
+                        if (col === "ticker") { av = a.ticker; bv = b.ticker; }
+                        else if (col === "market") { av = a.market; bv = b.market; }
+                        else if (col === "qty") { av = a.qty; bv = b.qty; }
+                        else if (col === "avgCost") { av = a.avgCost; bv = b.avgCost; }
+                        else if (col === "current") { av = a.currentPrice ?? -Infinity; bv = b.currentPrice ?? -Infinity; }
+                        else if (col === "pl") { av = a.unrealizedPL ?? -Infinity; bv = b.unrealizedPL ?? -Infinity; }
+                        else if (col === "plPct") { av = a.unrealizedPct ?? -Infinity; bv = b.unrealizedPct ?? -Infinity; }
+                        else { av = a.currentValue ?? a.costBasis; bv = b.currentValue ?? b.costBasis; }
+                        if (typeof av === "string") return dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+                        return dir === "asc" ? av - bv : bv - av;
+                      })
                       .map(h => {
                         const mkt = MARKETS.find(m => m.id === h.market);
                         return (
@@ -1460,7 +1493,24 @@ export default function PortfolioTracker() {
                             }}>
                               {h.unrealizedPct !== null ? `${h.unrealizedPct >= 0 ? "+" : ""}${formatNum(h.unrealizedPct, 1)}%` : "—"}
                             </td>
-                            <td style={{ padding: "10px 12px", fontSize: 12, color: T.textMuted }}>{h.bucket}</td>
+                            <td style={{ padding: "6px 12px" }} onClick={e => e.stopPropagation()}>
+                              <select
+                                value={data.holdingBuckets?.[`${h.market}:${h.ticker}`] || h.bucket}
+                                onChange={e => saveHoldingBucket(`${h.market}:${h.ticker}`, e.target.value)}
+                                style={{
+                                  background: T.surfaceBg, border: `1px solid ${T.border}`,
+                                  color: T.textMuted, fontSize: 11, borderRadius: 4,
+                                  padding: "3px 6px", cursor: "pointer",
+                                  fontFamily: "'DM Sans', sans-serif",
+                                }}
+                              >
+                                {BUCKET_OPTIONS.map(b => (
+                                  <option key={b} value={b}>
+                                    {b === "Swing (3d-2mo)" ? "Swing" : b === "Long-Term (up to 1yr)" ? "LT" : "Flex"}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
                           </tr>
                         );
                       })}
@@ -1476,7 +1526,7 @@ export default function PortfolioTracker() {
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.textMuted, letterSpacing: "0.6px", textTransform: "uppercase" }}>
-                Holdings ({analytics.holdings.length})
+                Holdings ({analytics.holdings.filter(h => marketFilter === "all" || h.market === marketFilter).length})
               </h3>
               <div style={{ display: "flex", gap: 8 }}>
                 <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => {
@@ -1487,11 +1537,11 @@ export default function PortfolioTracker() {
               </div>
             </div>
 
-            {analytics.holdings.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "40px 20px", color: T.textMuted }}>No open positions yet. Add a trade to get started.</div>
+            {analytics.holdings.filter(h => marketFilter === "all" || h.market === marketFilter).length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", color: T.textMuted }}>No open positions{marketFilter !== "all" ? " in this market" : ""}. Add a trade to get started.</div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 32 }}>
-                {analytics.holdings.map(h => {
+                {analytics.holdings.filter(h => marketFilter === "all" || h.market === marketFilter).map(h => {
                   const key = `${h.market}:${h.ticker}`;
                   const card = data.stockCards?.[key] || {};
                   const mkt = MARKETS.find(m => m.id === h.market);
@@ -1533,19 +1583,19 @@ export default function PortfolioTracker() {
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: T.textMuted, letterSpacing: "0.6px", textTransform: "uppercase" }}>
-                Watch List ({(data.watchList || []).length})
+                Watch List ({(data.watchList || []).filter(w => marketFilter === "all" || w.market === marketFilter).length})
               </h3>
               <button style={{ ...BP, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowWatchAddModal(true)}>+ Add to Watch List</button>
             </div>
 
-            {(data.watchList || []).length === 0 ? (
+            {(data.watchList || []).filter(w => marketFilter === "all" || w.market === marketFilter).length === 0 ? (
               <div style={{ textAlign: "center", padding: "40px 20px", color: T.textMuted, border: `2px dashed ${T.border}`, borderRadius: 10 }}>
                 <div style={{ fontSize: 24, marginBottom: 8 }}>👁</div>
-                <div>Watch List is empty. Add stocks you are tracking.</div>
+                <div>{(data.watchList || []).length === 0 ? "Watch List is empty. Add stocks you are tracking." : "No watch list entries for this market."}</div>
               </div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-                {(data.watchList || []).map(w => {
+                {(data.watchList || []).filter(w => marketFilter === "all" || w.market === marketFilter).map(w => {
                   const mkt = MARKETS.find(m => m.id === w.market);
                   return (
                     <div key={w.id}
