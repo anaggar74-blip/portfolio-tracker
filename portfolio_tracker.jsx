@@ -1183,6 +1183,7 @@ export default function PortfolioTracker() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stocks, crypto, fx }),
       });
+      if (!res.ok) throw new Error(`Price service returned ${res.status} — run "netlify dev" locally or check Netlify function logs`);
       const out = await res.json();
       persist({
         ...data,
@@ -1191,7 +1192,7 @@ export default function PortfolioTracker() {
         priceMeta: { lastFetchedAt: out.fetchedAt || new Date().toISOString(), errors: out.errors || [] },
       });
     } catch (e) {
-      persist({ ...data, priceMeta: { lastFetchedAt: data.priceMeta?.lastFetchedAt || null, errors: ["Network error — could not reach price service"] } });
+      persist({ ...data, priceMeta: { lastFetchedAt: data.priceMeta?.lastFetchedAt || null, errors: [e.message || "Network error — could not reach price service"] } });
     } finally {
       setFetchingPrices(false);
     }
@@ -1281,9 +1282,9 @@ export default function PortfolioTracker() {
       {data.priceMeta?.errors?.length > 0 && (
         <div style={{
           padding: "8px 22px", background: T.red, color: "#fff",
-          fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
+          fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
         }}>
-          ⚠ Some prices couldn't be updated ({data.priceMeta.errors.length}). EGX/ADX are always manual; others use the last known value.
+          ⚠ Price update issue: {data.priceMeta.errors[0]}{data.priceMeta.errors.length > 1 ? ` (+${data.priceMeta.errors.length - 1} more)` : ""}
         </div>
       )}
 
