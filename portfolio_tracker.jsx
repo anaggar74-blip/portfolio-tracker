@@ -705,7 +705,7 @@ function WatchListAddModal({ open, onClose, onSave, T }) {
 }
 
 // ─── Stock Card Modal ───
-function StockCardModal({ open, onClose, holding, cardData, onSave, T }) {
+function StockCardModal({ open, onClose, holding, cardData, onSave, onSavePrice, T }) {
   const DEFAULT_KPIS = [
     { label: "P/E Ratio", value: "" }, { label: "Revenue Growth", value: "" },
     { label: "EPS", value: "" }, { label: "Debt/Equity", value: "" },
@@ -722,6 +722,7 @@ function StockCardModal({ open, onClose, holding, cardData, onSave, T }) {
         t1: d.t1 != null ? d.t1 : "",
         t2: d.t2 != null ? d.t2 : "",
         stopLoss: d.stopLoss != null ? d.stopLoss : "",
+        currentPrice: holding?.currentPrice != null ? String(holding.currentPrice) : "",
         strategy: d.strategy || "",
         thesis: d.thesis || "",
         kpis: d.kpis?.length ? d.kpis : DEFAULT_KPIS,
@@ -773,6 +774,10 @@ function StockCardModal({ open, onClose, holding, cardData, onSave, T }) {
       stopLoss: form.stopLoss !== "" && form.stopLoss !== null ? (parseFloat(form.stopLoss) || null) : null,
     };
     onSave(toSave);
+    if (holding && MANUAL_MARKETS.includes(holding.market) && form.currentPrice !== "") {
+      const parsed = parseFloat(form.currentPrice);
+      if (!isNaN(parsed) && parsed > 0) onSavePrice?.(`${holding.market}:${holding.ticker}`, parsed);
+    }
     onClose();
   };
 
@@ -808,6 +813,22 @@ function StockCardModal({ open, onClose, holding, cardData, onSave, T }) {
               <div style={{ background: T.surfaceBg, borderRadius: 8, padding: 14, marginBottom: 16, border: `1px solid ${T.border}` }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 }}>Position</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: T.textMuted }}>Current Price</div>
+                    {MANUAL_MARKETS.includes(holding.market) ? (
+                      <input
+                        style={{ ...IS, marginTop: 2, fontSize: 13, fontFamily: "'JetBrains Mono', monospace", padding: "4px 8px" }}
+                        type="number" step="any" placeholder="Enter price…"
+                        value={form.currentPrice}
+                        onChange={e => set("currentPrice", e.target.value)}
+                      />
+                    ) : (
+                      <div style={{ fontSize: 13, fontWeight: 600, color: T.text, fontFamily: "'JetBrains Mono', monospace" }}>
+                        {holding.currentPrice != null ? formatNum(holding.currentPrice) : "—"}
+                        <span style={{ fontSize: 10, color: T.textMuted, marginLeft: 4 }}>auto</span>
+                      </div>
+                    )}
+                  </div>
                   {[
                     ["Qty", formatNum(holding.qty, holding.qty < 1 ? 6 : 2)],
                     ["Avg Cost", `${formatNum(holding.avgCost)} ${holding.currency}`],
@@ -1851,6 +1872,10 @@ export default function PortfolioTracker() {
         onSave={(formData) => {
           if (selectedCard?.type === "holding") saveStockCard(selectedCard.key, formData);
           else if (selectedCard?.type === "watch") saveWatchItem(selectedCard.id, formData);
+        }}
+        onSavePrice={(key, price) => {
+          const now = new Date().toISOString();
+          persist({ ...data, currentPrices: { ...data.currentPrices, [key]: String(price) }, priceEditedAt: { ...(data.priceEditedAt || {}), [key]: now } });
         }}
         T={T}
       />
