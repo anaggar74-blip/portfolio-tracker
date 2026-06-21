@@ -37,7 +37,8 @@ const timeAgo = (iso) => {
   return `${Math.floor(h / 24)}d ago`;
 };
 
-// Markets we cannot auto-fetch (no reliable free EGX/ADX price feed) — these stay manual.
+// Markets we cannot auto-fetch — these stay manual. Yahoo covers US/crypto/FX reliably.
+// EGX is excluded: Yahoo only resolves some EGX tickers and its prices diverge from the broker.
 const MANUAL_MARKETS = ["egx", "adx"];
 
 const DEFAULT_FX = { USD: 1, USDT: 1, EGP: 0.0196, AED: 0.2723 };

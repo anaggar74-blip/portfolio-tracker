@@ -1,12 +1,11 @@
-// Live price + FX proxy via Twelve Data (free tier).
-// Holds TWELVEDATA_API_KEY server-side so it is never exposed to the browser.
-// POST body: { stocks: ["RKLB"], crypto: ["BTC"], fx: ["AED","EGP"] }
-// Returns:   { prices: { "us:RKLB": "82.9", "crypto:BTC": "..." },
-//              fxRates: { AED: 0.27, EGP: 0.0196, USDT: 1 },
+// Live price + FX proxy via Yahoo Finance (keyless, free, no per-minute credit cap).
+// POST body: { stocks: ["AAPL"], crypto: ["BTC"], egx: ["COMI"], fx: ["AED","EGP"] }
+// Returns:   { prices: { "us:AAPL": "298.01", "crypto:BTC": "...", "egx:COMI": "..." },
+//              fxRates: { AED: 0.2723, EGP: 0.0201, USDT: 1 },
 //              fetchedAt: "<iso>", errors: [] }
-// EGX/ADX are never fetched here — they stay manual in the app.
+// Yahoo covers US, crypto, FX and EGX (Cairo, .CA). ADX is not on Yahoo — it stays manual in the app.
 
-const TD_PRICE = "https://api.twelvedata.com/price";
+const YF = "https://query1.finance.yahoo.com/v8/finance/chart/";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -17,28 +16,43 @@ const CORS = {
 
 const reply = (payload) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(payload) });
 
+// Map an app holding to its Yahoo symbol.
+function yahooSymbol(kind, ticker) {
+  if (kind === "crypto") return `${ticker}-USD`;
+  if (kind === "egx") return `${ticker}.CA`;
+  if (kind === "fx") return `${ticker}USD=X`;
+  return ticker; // us
+}
+
+async function fetchOne(symbol) {
+  const url = `${YF}${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" } });
+  const json = await res.json();
+  const meta = json?.chart?.result?.[0]?.meta;
+  const price = meta?.regularMarketPrice;
+  if (price === undefined || price === null) {
+    const code = json?.chart?.error?.code || res.status;
+    throw new Error(String(code));
+  }
+  return Number(price);
+}
+
 export async function handler(event) {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: CORS, body: "" };
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, headers: CORS, body: JSON.stringify({ errors: ["Method not allowed"] }) };
   }
 
-  const apiKey = process.env.TWELVEDATA_API_KEY;
-  if (!apiKey) {
-    return reply({ prices: {}, fxRates: {}, fetchedAt: null, errors: ["TWELVEDATA_API_KEY not configured"] });
-  }
-
   let body;
   try { body = JSON.parse(event.body || "{}"); } catch { body = {}; }
-  const stocks = Array.isArray(body.stocks) ? body.stocks : [];
-  const crypto = Array.isArray(body.crypto) ? body.crypto : [];
-  const fx = Array.isArray(body.fx) ? body.fx : [];
+  const arr = (v) => (Array.isArray(v) ? v : []);
 
-  // Map each requested item to a Twelve Data symbol, remembering how to file the result back.
+  // Build the work list, remembering how to file each result back.
   const map = [];
-  stocks.forEach(t => map.push({ symbol: t, kind: "stock", ticker: t }));
-  crypto.forEach(t => map.push({ symbol: `${t}/USD`, kind: "crypto", ticker: t }));
-  fx.forEach(c => map.push({ symbol: `${c}/USD`, kind: "fx", ticker: c }));
+  arr(body.stocks).forEach(t => map.push({ kind: "stock", ticker: t, symbol: yahooSymbol("stock", t) }));
+  arr(body.crypto).forEach(t => map.push({ kind: "crypto", ticker: t, symbol: yahooSymbol("crypto", t) }));
+  arr(body.egx).forEach(t => map.push({ kind: "egx", ticker: t, symbol: yahooSymbol("egx", t) }));
+  arr(body.fx).forEach(c => map.push({ kind: "fx", ticker: c, symbol: yahooSymbol("fx", c) }));
 
   const prices = {};
   const fxRates = { USDT: 1 };
@@ -48,32 +62,18 @@ export async function handler(event) {
     return reply({ prices, fxRates, fetchedAt: new Date().toISOString(), errors });
   }
 
-  const symbols = map.map(m => m.symbol).join(",");
-  let json;
-  try {
-    const res = await fetch(`${TD_PRICE}?symbol=${encodeURIComponent(symbols)}&apikey=${apiKey}`);
-    json = await res.json();
-  } catch (e) {
-    return reply({ prices, fxRates, fetchedAt: null, errors: ["Fetch failed: " + e.message] });
-  }
-
-  // A whole-request failure (e.g. rate limit) comes back as a flat error object.
-  if (json && json.status === "error") {
-    return reply({ prices, fxRates, fetchedAt: null, errors: [json.message || "Twelve Data error"] });
-  }
-
-  // Single symbol -> { price }; multiple -> { "SYM": { price } | { code, message, status } }.
-  const single = map.length === 1;
-  for (const m of map) {
-    const entry = single ? json : (json ? json[m.symbol] : undefined);
-    const num = entry ? Number(entry.price) : NaN;
-    if (!entry || entry.price === undefined || !isFinite(num)) {
-      errors.push(`${m.symbol}: ${(entry && entry.message) || "no data"}`);
-      continue;
+  const results = await Promise.allSettled(map.map(m => fetchOne(m.symbol)));
+  results.forEach((r, i) => {
+    const m = map[i];
+    if (r.status !== "fulfilled" || !isFinite(r.value)) {
+      errors.push(`${m.symbol}: ${(r.reason && r.reason.message) || "no data"}`);
+      return;
     }
-    if (m.kind === "fx") fxRates[m.ticker] = num;
-    else prices[`${m.kind === "crypto" ? "crypto" : "us"}:${m.ticker}`] = String(num);
-  }
+    if (m.kind === "fx") fxRates[m.ticker] = r.value;
+    else if (m.kind === "crypto") prices[`crypto:${m.ticker}`] = String(r.value);
+    else if (m.kind === "egx") prices[`egx:${m.ticker}`] = String(r.value);
+    else prices[`us:${m.ticker}`] = String(r.value);
+  });
 
   return reply({ prices, fxRates, fetchedAt: new Date().toISOString(), errors });
 }
