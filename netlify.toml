@@ -5,3 +5,15 @@
 
 [functions]
   directory = "netlify/functions"
+
+# Client calls /api/prices (Vercel-style); map it to the Netlify function.
+[[redirects]]
+  from = "/api/prices"
+  to = "/.netlify/functions/prices"
+  status = 200
+
+# SPA fallback for everything else.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

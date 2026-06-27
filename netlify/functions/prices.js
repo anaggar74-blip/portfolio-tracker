@@ -5,7 +5,11 @@
 //              fetchedAt: "<iso>", errors: [] }
 // Yahoo covers US, crypto, FX and EGX (Cairo, .CA). ADX is not on Yahoo — it stays manual in the app.
 
-const YF = "https://query1.finance.yahoo.com/v8/finance/chart/";
+// Yahoo throttles datacenter IPs on query1; query2 is used as a fallback host.
+const YF_HOSTS = [
+  "https://query1.finance.yahoo.com/v8/finance/chart/",
+  "https://query2.finance.yahoo.com/v8/finance/chart/",
+];
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -24,17 +28,39 @@ function yahooSymbol(kind, ticker) {
   return ticker; // us
 }
 
-async function fetchOne(symbol) {
-  const url = `${YF}${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" } });
-  const json = await res.json();
-  const meta = json?.chart?.result?.[0]?.meta;
-  const price = meta?.regularMarketPrice;
-  if (price === undefined || price === null) {
-    const code = json?.chart?.error?.code || res.status;
-    throw new Error(String(code));
+async function fetchHost(host, symbol) {
+  const url = `${host}${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+  // Abort each request so a stalled symbol can never hang the whole function
+  // (a hang gets the connection killed by the platform → "Failed to fetch" on the client).
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+    });
+    const json = await res.json();
+    const meta = json?.chart?.result?.[0]?.meta;
+    const price = meta?.regularMarketPrice;
+    if (price === undefined || price === null) {
+      throw new Error(String(json?.chart?.error?.code || res.status));
+    }
+    return Number(price);
+  } finally {
+    clearTimeout(timer);
   }
-  return Number(price);
+}
+
+async function fetchOne(symbol) {
+  let lastErr;
+  for (const host of YF_HOSTS) {
+    try {
+      return await fetchHost(host, symbol);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("no data");
 }
 
 export async function handler(event) {
