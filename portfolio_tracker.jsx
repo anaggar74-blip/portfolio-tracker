@@ -493,6 +493,7 @@ function LoginModal({ T }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const IS = mkInput(T);
   const BP = mkBtnPrimary(T);
 
@@ -529,9 +530,19 @@ function LoginModal({ T }) {
               placeholder="you@example.com" autoFocus />
           </Field>
           <Field label="Password" T={T}>
-            <input style={IS} type="password" value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="••••••••" />
+            <div style={{ position: "relative" }}>
+              <input style={{ ...IS, paddingRight: 64 }} type={showPassword ? "text" : "password"} value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="••••••••" />
+              <button type="button" onClick={() => setShowPassword(s => !s)}
+                style={{
+                  position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer",
+                  fontSize: 12, fontWeight: 600, color: T.textMuted, padding: 4,
+                }}>
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </div>
           </Field>
           {error && <p style={{ color: T.red, fontSize: 13, margin: "0 0 12px" }}>{error}</p>}
           <button style={{ ...BP, width: "100%", marginTop: 4, opacity: busy ? 0.6 : 1, cursor: busy ? "not-allowed" : "pointer" }} type="submit" disabled={busy}>
