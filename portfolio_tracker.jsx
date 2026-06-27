@@ -1200,7 +1200,7 @@ export default function PortfolioTracker() {
     const fx = ["AED", "EGP"];
     setFetchingPrices(true);
     try {
-      const res = await fetch("/.netlify/functions/prices", {
+      const res = await fetch("/api/prices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stocks, crypto, fx }),
