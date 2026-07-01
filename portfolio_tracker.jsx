@@ -1036,6 +1036,7 @@ export default function PortfolioTracker() {
   const [showWatchAddModal, setShowWatchAddModal] = useState(false);
   const [holdingsSort, setHoldingsSort] = useState({ col: "value", dir: "desc" });
   const [fetchingPrices, setFetchingPrices] = useState(false);
+  const [calSync, setCalSync] = useState("");
   const [showDataImport, setShowDataImport] = useState(false);
 
   const toggleTheme = () => {
@@ -1262,6 +1263,23 @@ export default function PortfolioTracker() {
     } catch { /* silent */ }
   };
 
+  // Push earnings + macro events into the "Stocks" Google Calendar (2-day reminder).
+  const syncCalendar = async () => {
+    setCalSync("syncing…");
+    try {
+      const res = await fetch("/api/sync-calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stockEvents: data.stockEvents || {} }),
+      });
+      const out = await res.json().catch(() => null);
+      if (!res.ok || !out) { setCalSync(`failed: ${out?.error || res.status}`); return; }
+      setCalSync(`✓ synced ${out.synced}/${out.total} to Google${out.errors?.length ? ` (${out.errors.length} err)` : ""}`);
+    } catch (e) {
+      setCalSync(`failed: ${e.message || "network error"}`);
+    }
+  };
+
   // Auto-fetch once after data loads, only if cached prices are older than 10 minutes.
   const didAutoFetch = useRef(false);
   useEffect(() => {
@@ -1335,6 +1353,12 @@ export default function PortfolioTracker() {
             disabled={fetchingPrices}
             onClick={refreshPrices}
           >{fetchingPrices ? "⏳ Refreshing" : "🔄 Refresh"}</button>
+          <button
+            style={{ ...BSS, fontSize: 12, padding: "7px 14px" }}
+            onClick={syncCalendar}
+            title="Push earnings + macro events to your 'Stocks' Google Calendar"
+          >📆 Sync Calendar</button>
+          {calSync && <span style={{ fontSize: 11, color: calSync.startsWith("failed") ? T.red : T.textMuted, whiteSpace: "nowrap" }}>{calSync}</span>}
           <ThemeToggle dark={dark} onToggle={toggleTheme} T={T} />
           <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowFxModal(true)}>💱 FX Rates</button>
           <button style={{ ...BSS, fontSize: 12, padding: "7px 14px" }} onClick={() => setShowPriceModal(true)}>📈 Update Prices</button>
