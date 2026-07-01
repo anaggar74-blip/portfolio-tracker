@@ -1259,6 +1259,36 @@ export default function PortfolioTracker() {
     }
   };
 
+  // Fetch upcoming stock events (next earnings) for US holdings. Runs independently of price
+  // staleness so earnings populate even when prices are already fresh. Sets a visible eventMeta.
+  const fetchEvents = async () => {
+    const open = analytics.holdings.filter(h => h.qty > 0.0001);
+    const stocks = [...new Set(open.filter(h => h.market === "us").map(h => h.ticker))];
+    if (stocks.length === 0) {
+      persist({ ...data, eventMeta: { at: new Date().toISOString(), loaded: 0, tried: 0, error: "No US holdings — earnings are US-only." } });
+      return;
+    }
+    try {
+      const res = await fetch("/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stocks }),
+      });
+      const raw = await res.text();
+      let ev = null;
+      try { ev = JSON.parse(raw); } catch { /* not JSON */ }
+      if (!ev) {
+        persist({ ...data, eventMeta: { at: new Date().toISOString(), loaded: 0, tried: stocks.length, error: `/api/events returned non-JSON (HTTP ${res.status})` } });
+        return;
+      }
+      const stockEvents = { ...(data.stockEvents || {}), ...(ev.stockEvents || {}) };
+      const loaded = Object.keys(ev.stockEvents || {}).length;
+      persist({ ...data, stockEvents, eventMeta: { at: new Date().toISOString(), loaded, tried: stocks.length, error: (ev.errors || []).slice(0, 2).join("; ") || "" } });
+    } catch (e) {
+      persist({ ...data, eventMeta: { at: new Date().toISOString(), loaded: 0, tried: stocks.length, error: e.message || "network error" } });
+    }
+  };
+
   // Auto-fetch once after data loads, only if cached prices are older than 10 minutes.
   const didAutoFetch = useRef(false);
   useEffect(() => {
@@ -1268,6 +1298,7 @@ export default function PortfolioTracker() {
     const lastDate = last ? new Date(last).toDateString() : null;
     const stale = !last || lastDate !== new Date().toDateString() || (Date.now() - new Date(last).getTime() > 4 * 60 * 60 * 1000);
     if (stale) refreshPrices();
+    fetchEvents();
   }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (showLogin) return <LoginModal T={T} />;
@@ -1346,6 +1377,17 @@ export default function PortfolioTracker() {
           fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
         }}>
           ⚠ Price update issue: {data.priceMeta.errors[0]}{data.priceMeta.errors.length > 1 ? ` (+${data.priceMeta.errors.length - 1} more)` : ""}
+        </div>
+      )}
+
+      {/* Earnings fetch status (always visible once tried) */}
+      {data.eventMeta && (
+        <div style={{
+          padding: "6px 22px", background: data.eventMeta.error && data.eventMeta.loaded === 0 ? T.redSoft : T.goldSoft,
+          color: data.eventMeta.error && data.eventMeta.loaded === 0 ? T.red : T.gold,
+          fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+        }}>
+          📅 Earnings: loaded {data.eventMeta.loaded} of {data.eventMeta.tried} US holdings{data.eventMeta.error ? ` — ${data.eventMeta.error}` : ""}
         </div>
       )}
 
