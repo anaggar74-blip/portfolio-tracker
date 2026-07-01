@@ -1220,25 +1220,37 @@ export default function PortfolioTracker() {
       const out = await res.json();
       // Also fetch upcoming stock events (next earnings) for US holdings. Best-effort: never blocks prices.
       let stockEvents = data.stockEvents || {};
-      if (stocks.length) {
+      const eventErrors = [];
+      if (stocks.length === 0) {
+        eventErrors.push("Events: no US holdings to fetch (earnings are US-only).");
+      } else {
         try {
           const evRes = await fetch("/api/events", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ stocks }),
           });
-          if (evRes.ok) {
-            const ev = await evRes.json();
+          const raw = await evRes.text();
+          let ev = null;
+          try { ev = JSON.parse(raw); } catch { /* not JSON */ }
+          if (!ev) {
+            eventErrors.push(`Events: endpoint returned non-JSON (HTTP ${evRes.status}) — /api/events not reachable.`);
+          } else {
             stockEvents = { ...stockEvents, ...(ev.stockEvents || {}) };
+            const got = Object.keys(ev.stockEvents || {}).length;
+            if (got === 0) eventErrors.push(`Events: 0 earnings returned for ${stocks.length} US tickers. ${(ev.errors || []).slice(0, 3).join("; ")}`);
+            else if (ev.errors && ev.errors.length) eventErrors.push(`Events: ${ev.errors.slice(0, 3).join("; ")}`);
           }
-        } catch { /* leave existing events untouched */ }
+        } catch (e) {
+          eventErrors.push(`Events: fetch failed — ${e.message || "network error"}`);
+        }
       }
       persist({
         ...data,
         currentPrices: { ...data.currentPrices, ...(out.prices || {}) },
         fxRates: { ...data.fxRates, ...(out.fxRates || {}) },
         stockEvents,
-        priceMeta: { lastFetchedAt: out.fetchedAt || new Date().toISOString(), errors: out.errors || [] },
+        priceMeta: { lastFetchedAt: out.fetchedAt || new Date().toISOString(), errors: [...(out.errors || []), ...eventErrors] },
       });
     } catch (e) {
       persist({ ...data, priceMeta: { lastFetchedAt: data.priceMeta?.lastFetchedAt || null, errors: [e.message || "Network error — could not reach price service"] } });
@@ -1547,7 +1559,14 @@ export default function PortfolioTracker() {
                             onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                           >
                             <td style={{ padding: "10px 12px", whiteSpace: "nowrap", color: T.text }}>{mkt?.flag} {mkt?.id.toUpperCase()}</td>
-                            <td style={{ padding: "10px 12px", fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.text }}>{h.ticker}</td>
+                            <td style={{ padding: "10px 12px", fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.text }}>
+                              {h.ticker}
+                              {data.stockEvents?.[`${h.market}:${h.ticker}`]?.earnings && (
+                                <span style={{ display: "block", marginTop: 3, fontSize: 10, fontWeight: 600, color: T.gold, fontFamily: "system-ui, sans-serif" }}>
+                                  📅 {data.stockEvents[`${h.market}:${h.ticker}`].earnings}{data.stockEvents[`${h.market}:${h.ticker}`].earningsEstimated ? " (est)" : ""}
+                                </span>
+                              )}
+                            </td>
                             <td style={{ padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", color: T.textSub }}>{formatNum(h.qty, h.qty < 1 ? 6 : 2)}</td>
                             <td style={{ padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", color: T.textSub }}>{formatNum(h.avgCost)}</td>
                             <td style={{ padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", color: h.currentPrice !== null ? T.text : T.textMuted }}>
