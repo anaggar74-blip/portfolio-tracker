@@ -1218,10 +1218,26 @@ export default function PortfolioTracker() {
       });
       if (!res.ok) throw new Error(`Price service returned ${res.status} — run "netlify dev" locally or check Netlify function logs`);
       const out = await res.json();
+      // Also fetch upcoming stock events (next earnings) for US holdings. Best-effort: never blocks prices.
+      let stockEvents = data.stockEvents || {};
+      if (stocks.length) {
+        try {
+          const evRes = await fetch("/api/events", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ stocks }),
+          });
+          if (evRes.ok) {
+            const ev = await evRes.json();
+            stockEvents = { ...stockEvents, ...(ev.stockEvents || {}) };
+          }
+        } catch { /* leave existing events untouched */ }
+      }
       persist({
         ...data,
         currentPrices: { ...data.currentPrices, ...(out.prices || {}) },
         fxRates: { ...data.fxRates, ...(out.fxRates || {}) },
+        stockEvents,
         priceMeta: { lastFetchedAt: out.fetchedAt || new Date().toISOString(), errors: out.errors || [] },
       });
     } catch (e) {
@@ -1649,6 +1665,11 @@ export default function PortfolioTracker() {
                           {card.t1 && <span style={{ fontSize: 11, color: T.gold, background: T.goldSoft, padding: "1px 6px", borderRadius: 3 }}>T1 {card.t1}</span>}
                           {card.t2 && <span style={{ fontSize: 11, color: T.gold, background: T.goldSoft, padding: "1px 6px", borderRadius: 3 }}>T2 {card.t2}</span>}
                           {card.stopLoss && <span style={{ fontSize: 11, color: T.red, background: T.redSoft, padding: "1px 6px", borderRadius: 3 }}>SL {card.stopLoss}</span>}
+                        </div>
+                      )}
+                      {data.stockEvents?.[key]?.earnings && (
+                        <div style={{ fontSize: 11, color: T.gold, marginBottom: 6 }}>
+                          📅 Earnings {data.stockEvents[key].earnings}{data.stockEvents[key].earningsEstimated ? " (est)" : ""}
                         </div>
                       )}
                       {card.notes
