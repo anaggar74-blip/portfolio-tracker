@@ -1218,39 +1218,25 @@ export default function PortfolioTracker() {
       });
       if (!res.ok) throw new Error(`Price service returned ${res.status} — run "netlify dev" locally or check Netlify function logs`);
       const out = await res.json();
-      // Also fetch upcoming stock events (next earnings) for US holdings. Best-effort: never blocks prices.
+      // Also refresh upcoming stock events (next earnings) for US holdings. Best-effort, silent.
       let stockEvents = data.stockEvents || {};
-      const eventErrors = [];
-      if (stocks.length === 0) {
-        eventErrors.push("Events: no US holdings to fetch (earnings are US-only).");
-      } else {
+      if (stocks.length) {
         try {
           const evRes = await fetch("/api/events", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ stocks }),
           });
-          const raw = await evRes.text();
-          let ev = null;
-          try { ev = JSON.parse(raw); } catch { /* not JSON */ }
-          if (!ev) {
-            eventErrors.push(`Events: endpoint returned non-JSON (HTTP ${evRes.status}) — /api/events not reachable.`);
-          } else {
-            stockEvents = { ...stockEvents, ...(ev.stockEvents || {}) };
-            const got = Object.keys(ev.stockEvents || {}).length;
-            if (got === 0) eventErrors.push(`Events: 0 earnings returned for ${stocks.length} US tickers. ${(ev.errors || []).slice(0, 3).join("; ")}`);
-            else if (ev.errors && ev.errors.length) eventErrors.push(`Events: ${ev.errors.slice(0, 3).join("; ")}`);
-          }
-        } catch (e) {
-          eventErrors.push(`Events: fetch failed — ${e.message || "network error"}`);
-        }
+          const ev = await evRes.json().catch(() => null);
+          if (ev) stockEvents = { ...stockEvents, ...(ev.stockEvents || {}) };
+        } catch { /* keep existing events */ }
       }
       persist({
         ...data,
         currentPrices: { ...data.currentPrices, ...(out.prices || {}) },
         fxRates: { ...data.fxRates, ...(out.fxRates || {}) },
         stockEvents,
-        priceMeta: { lastFetchedAt: out.fetchedAt || new Date().toISOString(), errors: [...(out.errors || []), ...eventErrors] },
+        priceMeta: { lastFetchedAt: out.fetchedAt || new Date().toISOString(), errors: out.errors || [] },
       });
     } catch (e) {
       persist({ ...data, priceMeta: { lastFetchedAt: data.priceMeta?.lastFetchedAt || null, errors: [e.message || "Network error — could not reach price service"] } });
@@ -1264,29 +1250,16 @@ export default function PortfolioTracker() {
   const fetchEvents = async () => {
     const open = analytics.holdings.filter(h => h.qty > 0.0001);
     const stocks = [...new Set(open.filter(h => h.market === "us").map(h => h.ticker))];
-    if (stocks.length === 0) {
-      persist({ ...data, eventMeta: { at: new Date().toISOString(), loaded: 0, tried: 0, error: "No US holdings — earnings are US-only." } });
-      return;
-    }
+    if (stocks.length === 0) return;
     try {
       const res = await fetch("/api/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stocks }),
       });
-      const raw = await res.text();
-      let ev = null;
-      try { ev = JSON.parse(raw); } catch { /* not JSON */ }
-      if (!ev) {
-        persist({ ...data, eventMeta: { at: new Date().toISOString(), loaded: 0, tried: stocks.length, error: `/api/events returned non-JSON (HTTP ${res.status})` } });
-        return;
-      }
-      const stockEvents = { ...(data.stockEvents || {}), ...(ev.stockEvents || {}) };
-      const loaded = Object.keys(ev.stockEvents || {}).length;
-      persist({ ...data, stockEvents, eventMeta: { at: new Date().toISOString(), loaded, tried: stocks.length, error: (ev.errors || []).slice(0, 2).join("; ") || "" } });
-    } catch (e) {
-      persist({ ...data, eventMeta: { at: new Date().toISOString(), loaded: 0, tried: stocks.length, error: e.message || "network error" } });
-    }
+      const ev = await res.json().catch(() => null);
+      if (ev) persist({ ...data, stockEvents: { ...(data.stockEvents || {}), ...(ev.stockEvents || {}) } });
+    } catch { /* silent */ }
   };
 
   // Auto-fetch once after data loads, only if cached prices are older than 10 minutes.
@@ -1380,16 +1353,23 @@ export default function PortfolioTracker() {
         </div>
       )}
 
-      {/* Earnings fetch status (always visible once tried) */}
-      {data.eventMeta && (
-        <div style={{
-          padding: "6px 22px", background: data.eventMeta.error && data.eventMeta.loaded === 0 ? T.redSoft : T.goldSoft,
-          color: data.eventMeta.error && data.eventMeta.loaded === 0 ? T.red : T.gold,
-          fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-        }}>
-          📅 Earnings: loaded {data.eventMeta.loaded} of {data.eventMeta.tried} US holdings{data.eventMeta.error ? ` — ${data.eventMeta.error}` : ""}
-        </div>
-      )}
+      {/* Next upcoming earnings across holdings */}
+      {(() => {
+        const today = new Date().toISOString().slice(0, 10);
+        const next = Object.entries(data.stockEvents || {})
+          .filter(([, v]) => v?.earnings && v.earnings >= today)
+          .sort((a, b) => a[1].earnings.localeCompare(b[1].earnings))[0];
+        if (!next) return null;
+        const ticker = next[0].split(":")[1];
+        return (
+          <div style={{
+            padding: "6px 22px", background: T.goldSoft, color: T.gold,
+            fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+          }}>
+            📅 Next up: {ticker} earnings {next[1].earnings}{next[1].earningsEstimated ? " (est)" : ""}
+          </div>
+        );
+      })()}
 
       {/* Tabs */}
       <div style={{
