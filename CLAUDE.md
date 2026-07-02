@@ -14,7 +14,7 @@ No linting or test suite is configured.
 
 ## Architecture
 
-This is a single-page React app built with Vite, deployed to Netlify.
+This is a single-page React app built with Vite, deployed to both Netlify and Vercel (same `dist/` build; each platform serves the price proxy at `/api/prices`).
 
 **Entry point:** `src/main.jsx` → imports `PortfolioTracker` from `../portfolio_tracker.jsx`  
 **Main file:** `portfolio_tracker.jsx` (root level) — the entire app lives here as one file.
@@ -52,9 +52,9 @@ P&L is computed by replaying transactions into a `holdingMap` keyed by `market:t
 
 ### Price Updates
 
-**Auto-fetch (US, crypto, FX):** US stock prices, crypto prices, and FX rates (AED/EGP→USD; USDT pinned to 1) are fetched automatically from [Twelve Data](https://twelvedata.com) (free tier) through a Netlify Function proxy at `netlify/functions/prices.js`. The function holds the API key server-side (env var `TWELVEDATA_API_KEY`) so it is never exposed to the browser. The client calls it via `refreshPrices()` in `portfolio_tracker.jsx`, which auto-runs once on load if cached prices are older than 10 minutes, and on demand via the top-bar **🔄 Refresh** button. Results merge into `currentPrices`/`fxRates` and persist (localStorage + Supabase). `priceMeta = { lastFetchedAt, errors }` tracks the last fetch; errors surface as a red banner.
+**Auto-fetch (US, crypto, FX):** US stock prices, crypto prices, and FX rates (AED/EGP→USD; USDT pinned to 1) are fetched automatically from **Yahoo Finance** (keyless, free) through a serverless proxy. The proxy exists twice, identical in behaviour — `api/prices.js` (Vercel) and `netlify/functions/prices.js` (Netlify); `netlify.toml` redirects `/api/prices` → the Netlify function, so the client always POSTs to `/api/prices` regardless of host. No API key is involved (Yahoo's public `query1`/`query2` chart endpoints; each request has a 6s `AbortController` timeout and falls back across both hosts). The client calls it via `refreshPrices()` in `portfolio_tracker.jsx` (POST body `{ stocks, crypto, fx }`), which auto-runs once on load if cached prices are older than 10 minutes, and on demand via the top-bar **🔄 Refresh** button. Results merge into `currentPrices`/`fxRates` and persist (localStorage + Supabase). `priceMeta = { lastFetchedAt, errors }` tracks the last fetch; errors surface as a red banner.
 
-**Manual (EGX, ADX):** No reliable free quote API exists for the Egyptian (EGX) or Abu Dhabi (ADX) exchanges, so these stay manual via the "Update Prices" modal. `MANUAL_MARKETS = ["egx","adx"]`. Manual edits stamp `priceEditedAt[market:ticker]`, and these holdings show a red **● manual · Nd ago** badge in the holdings table. Auto-fetch never overwrites EGX/ADX values.
+**Manual (EGX, ADX):** `MANUAL_MARKETS = ["egx","adx"]`. `refreshPrices()` never requests EGX/ADX tickers (only `us`/`crypto`/`fx`), so these stay manual via the "Update Prices" modal. (The proxy *can* resolve EGX via Yahoo's `.CA` suffix, but the client does not use it.) Manual edits stamp `priceEditedAt[market:ticker]`, and these holdings show a red **● manual · Nd ago** badge in the holdings table. Auto-fetch never overwrites EGX/ADX values.
 
 Holdings without a price show `—` for P&L.
 
@@ -65,10 +65,9 @@ Holdings without a price show `—` for P&L.
 ```
 VITE_SUPABASE_URL
 VITE_SUPABASE_ANON_KEY
-TWELVEDATA_API_KEY      # server-side only (Netlify Function); NOT a VITE_ var
 ```
 
-Store `VITE_*` vars in `.env.local` (gitignored) for local dev and in Netlify environment variables for production. `TWELVEDATA_API_KEY` is read only by the Netlify Function (`process.env`), so it must be set in **Netlify environment variables** (and in `.env`/Netlify CLI for `netlify dev`) — never prefix it with `VITE_`, or it would be bundled into the public client.
+Store these in `.env.local` (gitignored) for local dev and in the Netlify/Vercel site environment variables for production. The price proxy needs no key (Yahoo is keyless), so there are no server-side-only env vars.
 
 **Data flow:**
 - `loadData()` (async): checks for an active Supabase session → if online, fetches `portfolio_data` row and writes it to `localStorage` → falls back to `localStorage` on failure or offline.
@@ -82,7 +81,11 @@ Store `VITE_*` vars in `.env.local` (gitignored) for local dev and in Netlify en
 
 ### Deployment
 
-Netlify reads `netlify.toml`: build command is `npm run build`, publish dir is `dist/`. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Netlify site environment variables.
+**Netlify** reads `netlify.toml`: build `npm run build`, publish `dist/`, functions in `netlify/functions`; redirects map `/api/prices` → the prices function and add an SPA fallback to `index.html`.
+
+**Vercel** reads `vercel.json`: `api/prices.js` is auto-served as a serverless function at `/api/prices`; the rewrite sends every non-`/api/` path to `index.html` for SPA routing. See `DEPLOY_VERCEL.md` for the full Vercel setup.
+
+On either platform set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in the site environment variables.
 
 ## Behavioral Guidelines
 

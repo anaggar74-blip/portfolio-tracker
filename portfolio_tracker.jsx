@@ -1219,14 +1219,15 @@ export default function PortfolioTracker() {
       });
       if (!res.ok) throw new Error(`Price service returned ${res.status} — run "netlify dev" locally or check Netlify function logs`);
       const out = await res.json();
-      // Also refresh upcoming stock events (next earnings) for US holdings. Best-effort, silent.
+      // Also refresh upcoming stock events (next earnings) for US holdings + watch list. Best-effort, silent.
       let stockEvents = data.stockEvents || {};
-      if (stocks.length) {
+      const eventStocks = [...new Set([...stocks, ...(data.watchList || []).filter(w => w.market === "us").map(w => w.ticker)])];
+      if (eventStocks.length) {
         try {
           const evRes = await fetch("/api/events", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stocks }),
+            body: JSON.stringify({ stocks: eventStocks }),
           });
           const ev = await evRes.json().catch(() => null);
           if (ev) stockEvents = { ...stockEvents, ...(ev.stockEvents || {}) };
@@ -1250,7 +1251,9 @@ export default function PortfolioTracker() {
   // staleness so earnings populate even when prices are already fresh. Sets a visible eventMeta.
   const fetchEvents = async () => {
     const open = analytics.holdings.filter(h => h.qty > 0.0001);
-    const stocks = [...new Set(open.filter(h => h.market === "us").map(h => h.ticker))];
+    const holdingStocks = open.filter(h => h.market === "us").map(h => h.ticker);
+    const watchStocks = (data.watchList || []).filter(w => w.market === "us").map(w => w.ticker);
+    const stocks = [...new Set([...holdingStocks, ...watchStocks])];
     if (stocks.length === 0) return;
     try {
       const res = await fetch("/api/events", {
@@ -1780,6 +1783,11 @@ export default function PortfolioTracker() {
                         </div>
                         <button onClick={e => { e.stopPropagation(); deleteWatchItem(w.id); }} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 13, padding: "0 2px" }}>🗑</button>
                       </div>
+                      {data.stockEvents?.[`${w.market}:${w.ticker}`]?.earnings && (
+                        <div style={{ fontSize: 11, fontWeight: 600, color: T.gold, fontFamily: "system-ui, sans-serif", marginBottom: (w.t1 || w.t2 || w.stopLoss) ? 6 : 0 }}>
+                          📅 {data.stockEvents[`${w.market}:${w.ticker}`].earnings}{data.stockEvents[`${w.market}:${w.ticker}`].earningsEstimated ? " (est)" : ""}
+                        </div>
+                      )}
                       {(w.t1 || w.t2 || w.stopLoss) && (
                         <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                           {w.t1 && <span style={{ fontSize: 11, color: T.gold, background: T.goldSoft, padding: "1px 6px", borderRadius: 3 }}>T1 {w.t1}</span>}

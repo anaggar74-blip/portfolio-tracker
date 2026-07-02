@@ -51,15 +51,24 @@ async function getAccessToken() {
 async function resolveCalendarId(token) {
   if (process.env.GOOGLE_CALENDAR_ID) return process.env.GOOGLE_CALENDAR_ID;
   const auth = { Authorization: `Bearer ${token}` };
-  const list = await (await fetch(`${GCAL}/users/me/calendarList`, { headers: auth })).json();
+
+  const listRes = await fetch(`${GCAL}/users/me/calendarList`, { headers: auth });
+  const list = await listRes.json().catch(() => ({}));
+  if (!listRes.ok) {
+    throw new Error(`calendarList failed: ${listRes.status} ${JSON.stringify(list.error || list).slice(0, 200)}`);
+  }
   const found = (list.items || []).find(c => c.summary === "Stocks");
   if (found) return found.id;
-  const created = await (await fetch(`${GCAL}/calendars`, {
+
+  const createRes = await fetch(`${GCAL}/calendars`, {
     method: "POST",
     headers: { ...auth, "Content-Type": "application/json" },
     body: JSON.stringify({ summary: "Stocks", timeZone: "America/New_York" }),
-  })).json();
-  if (!created.id) throw new Error("could not create 'Stocks' calendar");
+  });
+  const created = await createRes.json().catch(() => ({}));
+  if (!createRes.ok || !created.id) {
+    throw new Error(`could not create 'Stocks' calendar: ${createRes.status} ${JSON.stringify(created.error || created).slice(0, 200)}. Set GOOGLE_CALENDAR_ID to skip creation.`);
+  }
   return created.id;
 }
 
