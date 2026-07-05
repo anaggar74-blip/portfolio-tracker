@@ -139,7 +139,7 @@ const SEED_DATA = {
   holdingBuckets: {},
 };
 
-const INITIAL_DATA = { transactions: [], topups: [], fxRates: DEFAULT_FX, currentPrices: {}, stockCards: {}, watchList: [], holdingBuckets: {} };
+const INITIAL_DATA = { transactions: [], topups: [], fxRates: DEFAULT_FX, currentPrices: {}, stockCards: {}, watchList: [], holdingBuckets: {}, snapshots: [] };
 
 // ─── Mackenzy Colour Standard ───
 const DARK = {
@@ -470,6 +470,89 @@ function StatCard({ label, value, sub, accent, T }) {
       <div style={{ fontSize: 12, color: T.textMuted, fontWeight: 500, marginBottom: 6, letterSpacing: "0.4px", textTransform: "uppercase" }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 700, color: accent || T.text, fontFamily: "'JetBrains Mono', monospace" }}>{value}</div>
       {sub && <div style={{ fontSize: 12, color: T.textMuted, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ─── Money-Weighted Return (XIRR) ───
+// flows: [{ date: Date, amount }] — money into the account is negative,
+// money out (withdrawals + today's ending value) is positive. Solves NPV=0
+// via bisection (robust, no derivative). Returns annualized rate, or null.
+function xirr(flows) {
+  if (!flows || flows.length < 2) return null;
+  const sorted = [...flows].sort((a, b) => a.date - b.date);
+  const hasNeg = sorted.some(f => f.amount < 0);
+  const hasPos = sorted.some(f => f.amount > 0);
+  if (!hasNeg || !hasPos) return null;
+  const t0 = sorted[0].date.getTime();
+  const yr = f => (f.date.getTime() - t0) / (365 * 864e5);
+  const npv = r => sorted.reduce((s, f) => s + f.amount / Math.pow(1 + r, yr(f)), 0);
+  let lo = -0.9999, hi = 100, flo = npv(lo), fhi = npv(hi);
+  if (!isFinite(flo) || !isFinite(fhi) || flo * fhi > 0) return null;
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2, fm = npv(mid);
+    if (!isFinite(fm)) return null;
+    if (Math.abs(fm) < 1e-6) return mid;
+    if (flo * fm < 0) { hi = mid; } else { lo = mid; flo = fm; }
+  }
+  return (lo + hi) / 2;
+}
+
+// ─── Minimal inline SVG line chart (no chart library) ───
+// series: [{ name, color, points: [{ t, v }] }]  where t = epoch ms, v = USD.
+function MiniLineChart({ series, T, height = 240, fmt = (v) => v.toFixed(0) }) {
+  const pts = (series || []).flatMap(s => s.points || []);
+  if (pts.length < 2) {
+    return (
+      <div style={{ padding: "40px 16px", textAlign: "center", color: T.textMuted, fontSize: 13, background: T.surfaceBg, borderRadius: 8, border: `1px solid ${T.border}` }}>
+        Not enough data yet — need at least two points.
+      </div>
+    );
+  }
+  const W = 820, H = height, padL = 62, padR = 18, padT = 16, padB = 30;
+  const ts = pts.map(p => p.t), vs = pts.map(p => p.v);
+  const minT = Math.min(...ts), maxT = Math.max(...ts);
+  let minV = Math.min(...vs, 0), maxV = Math.max(...vs, 0);
+  if (minV === maxV) { minV -= 1; maxV += 1; }
+  const x = t => padL + (maxT === minT ? 0 : (t - minT) / (maxT - minT)) * (W - padL - padR);
+  const y = v => padT + (1 - (v - minV) / (maxV - minV)) * (H - padT - padB);
+  const zeroY = y(0);
+  const dateLbl = t => new Date(t).toISOString().slice(0, 10);
+  return (
+    <div style={{ overflowX: "auto", background: T.surfaceBg, borderRadius: 8, border: `1px solid ${T.border}`, padding: 8 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block", minWidth: 480 }}>
+        {/* zero baseline */}
+        <line x1={padL} y1={zeroY} x2={W - padR} y2={zeroY} stroke={T.border} strokeWidth="1" strokeDasharray="4 4" />
+        {/* y labels */}
+        {[maxV, 0, minV].map((v, i) => (
+          <text key={i} x={padL - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill={T.textMuted} fontFamily="'JetBrains Mono', monospace">{fmt(v)}</text>
+        ))}
+        {/* x labels */}
+        <text x={padL} y={H - 8} textAnchor="start" fontSize="11" fill={T.textMuted}>{dateLbl(minT)}</text>
+        <text x={W - padR} y={H - 8} textAnchor="end" fontSize="11" fill={T.textMuted}>{dateLbl(maxT)}</text>
+        {/* series */}
+        {series.map((s, si) => {
+          const p = (s.points || []).slice().sort((a, b) => a.t - b.t);
+          if (p.length < 2) return null;
+          const d = p.map((pt, i) => `${i === 0 ? "M" : "L"}${x(pt.t).toFixed(1)},${y(pt.v).toFixed(1)}`).join(" ");
+          const last = p[p.length - 1];
+          return (
+            <g key={si}>
+              <path d={d} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" />
+              <circle cx={x(last.t)} cy={y(last.v)} r="3.5" fill={s.color} />
+            </g>
+          );
+        })}
+      </svg>
+      {series.length > 1 && (
+        <div style={{ display: "flex", gap: 16, padding: "6px 8px 2px", flexWrap: "wrap" }}>
+          {series.map((s, i) => (
+            <span key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: T.textMuted }}>
+              <span style={{ width: 12, height: 3, background: s.color, borderRadius: 2, display: "inline-block" }} />{s.name}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1243,6 +1326,63 @@ export default function PortfolioTracker() {
     return { holdings, closed, marketStats, totalInvestedUSD, totalValueUSD, totalRealizedUSD, totalUnrealizedUSD, totalCashUSD, totalDepositsUSD, bucketAlloc };
   }, [data]);
 
+  // ─── Performance: money-weighted return (IRR) + cumulative realized P&L over time ───
+  const perf = useMemo(() => {
+    const fx = data.fxRates || DEFAULT_FX;
+
+    // Cumulative realized P&L (USD) — replay per ticker in date order so avg cost is correct.
+    const txns = [...(data.transactions || [])].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const hm = {};
+    const realizedEvents = [];
+    txns.forEach(tx => {
+      const key = `${tx.market}:${tx.ticker}`;
+      if (!hm[key]) hm[key] = { qty: 0, cost: 0 };
+      if (tx.type === "buy") { hm[key].cost += tx.qty * tx.price; hm[key].qty += tx.qty; }
+      else {
+        const avg = hm[key].qty > 0 ? hm[key].cost / hm[key].qty : 0;
+        const r = (tx.price - avg) * tx.qty;
+        hm[key].cost -= avg * tx.qty; hm[key].qty -= tx.qty;
+        realizedEvents.push({ t: new Date(tx.date).getTime(), v: r * (fx[tx.currency] || 1) });
+      }
+    });
+    realizedEvents.sort((a, b) => a.t - b.t);
+    let cum = 0;
+    const realizedSeries = realizedEvents.map(e => { cum += e.v; return { t: e.t, v: cum }; });
+
+    // XIRR from dated deposits (−) / withdrawals (+) plus today's account value (+).
+    const flows = (data.topups || []).map(tp => ({
+      date: new Date(tp.date),
+      amount: (tp.amount * (fx[tp.currency] || 1)) * (tp.type === "deposit" ? -1 : 1),
+    }));
+    const accountValueUSD = analytics.totalValueUSD + analytics.totalCashUSD;
+    if (flows.length) flows.push({ date: new Date(), amount: accountValueUSD });
+    const irr = xirr(flows);
+
+    return { realizedSeries, irr, accountValueUSD };
+  }, [data.transactions, data.topups, data.fxRates, analytics.totalValueUSD, analytics.totalCashUSD]);
+
+  // Record one portfolio snapshot per day (value + net contributions + total P&L, all USD).
+  const takeSnapshot = () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const snap = {
+      date: today,
+      valueUSD: perf.accountValueUSD,
+      netContribUSD: analytics.totalDepositsUSD,
+      plUSD: analytics.totalRealizedUSD + analytics.totalUnrealizedUSD,
+    };
+    const rest = (data.snapshots || []).filter(s => s.date !== today);
+    persist({ ...data, snapshots: [...rest, snap].sort((a, b) => a.date.localeCompare(b.date)) });
+  };
+
+  // Auto-snapshot once per day after data loads (builds the value curve going forward).
+  const didSnapshot = useRef(false);
+  useEffect(() => {
+    if (loading || didSnapshot.current) return;
+    didSnapshot.current = true;
+    const today = new Date().toISOString().slice(0, 10);
+    if (!(data.snapshots || []).some(s => s.date === today)) takeSnapshot();
+  }, [loading]);
+
   // ─── Live Price + FX Auto-Fetch (via Netlify Function proxy) ───
   const refreshPrices = async () => {
     if (fetchingPrices) return;
@@ -1355,6 +1495,7 @@ export default function PortfolioTracker() {
   const TABS = [
     { id: "dashboard", label: "Dashboard", icon: "◉" },
     { id: "holdings", label: "Holdings", icon: "◈" },
+    { id: "performance", label: "Performance", icon: "📈" },
     { id: "cards", label: "Stock Cards", icon: "⊞" },
     { id: "transactions", label: "Transactions", icon: "⟳" },
     { id: "wallets", label: "Wallets", icon: "◇" },
@@ -1471,7 +1612,8 @@ export default function PortfolioTracker() {
         {tab === "dashboard" && (
           <>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 24 }}>
-              <StatCard label="Portfolio Value (USD)" value={`$${formatNum(portfolioValue)}`} T={T} />
+              <StatCard label="Total Net Worth (USD)" value={`$${formatNum(portfolioValue)}`} accent={T.gold} sub="holdings + cash, all markets" T={T} />
+              <StatCard label="Holdings Value (USD)" value={`$${formatNum(analytics.totalValueUSD)}`} T={T} />
               <StatCard label="Total Invested (USD)" value={`$${formatNum(analytics.totalInvestedUSD)}`} T={T} />
               <StatCard
                 label="Total P&L"
@@ -1495,6 +1637,10 @@ export default function PortfolioTracker() {
                       <span style={{ fontSize: 20 }}>{m.flag}</span>
                       <span style={{ fontWeight: 600, fontSize: 14, color: T.text }}>{m.name}</span>
                       <span style={{ fontSize: 11, color: T.textMuted, marginLeft: "auto" }}>{m.currency}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 10px", marginBottom: 10, background: T.goldSoft, borderRadius: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: T.gold, textTransform: "uppercase", letterSpacing: "0.4px" }}>Net Worth</span>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: T.gold, fontFamily: "'JetBrains Mono', monospace" }}>{formatNum(s.value + s.cash)} {m.currency}</span>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                       {[
@@ -1943,6 +2089,11 @@ export default function PortfolioTracker() {
         {/* ═══ WALLETS ═══ */}
         {tab === "wallets" && (
           <>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
+              <StatCard label="Total Net Worth (USD)" value={`$${formatNum(analytics.totalValueUSD + analytics.totalCashUSD)}`} accent={T.gold} sub="holdings + cash, all markets" T={T} />
+              <StatCard label="Total Cash Available (USD)" value={`$${formatNum(analytics.totalCashUSD)}`} T={T} />
+              <StatCard label="Net Funded (USD)" value={`$${formatNum(analytics.totalDepositsUSD)}`} sub="deposits − withdrawals" T={T} />
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, marginBottom: 24 }}>
               {MARKETS.filter(m => marketFilter === "all" || m.id === marketFilter).map(m => {
                 const s = analytics.marketStats[m.id];
@@ -1951,6 +2102,10 @@ export default function PortfolioTracker() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
                       <span style={{ fontSize: 22 }}>{m.flag}</span>
                       <span style={{ fontWeight: 600, color: T.text }}>{m.name}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 10px", marginBottom: 10, background: T.goldSoft, borderRadius: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: T.gold, textTransform: "uppercase", letterSpacing: "0.4px" }}>Net Worth</span>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: T.gold, fontFamily: "'JetBrains Mono', monospace" }}>{formatNum(s.value + s.cash)} {m.currency}</span>
                     </div>
                     {[
                       ["Total Deposits", formatNum(s.deposits)],
@@ -2020,6 +2175,52 @@ export default function PortfolioTracker() {
             )}
           </>
         )}
+
+        {/* ═══ PERFORMANCE ═══ */}
+        {tab === "performance" && (() => {
+          const totalPL = analytics.totalRealizedUSD + analytics.totalUnrealizedUSD;
+          const snaps = [...(data.snapshots || [])].sort((a, b) => a.date.localeCompare(b.date));
+          const moneyAxis = (v) => `$${Math.round(v).toLocaleString()}`;
+          const plColor = totalPL >= 0 ? T.green : T.red;
+          const irrPct = perf.irr != null ? perf.irr * 100 : null;
+          return (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                <p style={{ fontSize: 13, color: T.textMuted, margin: 0, maxWidth: 640 }}>
+                  Your investing benefit is <b style={{ color: T.textSub }}>realized + unrealized P&amp;L</b> — withdrawing money never reduces it. IRR is the return your money actually earned over time, accounting for when you deposited or withdrew. All figures in USD.
+                </p>
+                <button style={{ ...BSS, fontSize: 12, padding: "6px 14px", whiteSpace: "nowrap" }} onClick={takeSnapshot}>📸 Snapshot now</button>
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 24 }}>
+                <StatCard label="Total P&L (USD)" value={`${totalPL >= 0 ? "+" : "−"}$${formatNum(Math.abs(totalPL))}`} accent={plColor}
+                  sub={`Realized ${analytics.totalRealizedUSD >= 0 ? "+" : "−"}$${formatNum(Math.abs(analytics.totalRealizedUSD))} · Unrealized ${analytics.totalUnrealizedUSD >= 0 ? "+" : "−"}$${formatNum(Math.abs(analytics.totalUnrealizedUSD))}`} T={T} />
+                <StatCard label="Money-Weighted Return (IRR)" value={irrPct != null ? `${irrPct >= 0 ? "+" : ""}${irrPct.toFixed(1)}%` : "—"}
+                  accent={irrPct != null ? (irrPct >= 0 ? T.green : T.red) : T.text}
+                  sub={irrPct != null ? "annualized, incl. deposits & withdrawals" : "add wallet deposits to compute"} T={T} />
+                <StatCard label="Current Value (USD)" value={`$${formatNum(perf.accountValueUSD)}`} sub="holdings + cash" T={T} />
+                <StatCard label="Net Funded (USD)" value={`$${formatNum(analytics.totalDepositsUSD)}`} sub="deposits − withdrawals" T={T} />
+              </div>
+
+              <h3 style={{ fontSize: 13, fontWeight: 600, color: T.textMuted, marginBottom: 12, letterSpacing: "0.6px", textTransform: "uppercase" }}>Cumulative Realized P&L Over Time</h3>
+              <p style={{ fontSize: 12, color: T.textMuted, margin: "0 0 10px" }}>Booked gains/losses from every sell, to date. Exact from your transaction history.</p>
+              <div style={{ marginBottom: 28 }}>
+                <MiniLineChart series={[{ name: "Realized P&L", color: T.gold, points: perf.realizedSeries }]} T={T} fmt={moneyAxis} />
+              </div>
+
+              <h3 style={{ fontSize: 13, fontWeight: 600, color: T.textMuted, marginBottom: 12, letterSpacing: "0.6px", textTransform: "uppercase" }}>Portfolio Value &amp; Total P&L Over Time</h3>
+              <p style={{ fontSize: 12, color: T.textMuted, margin: "0 0 10px" }}>
+                Built from daily snapshots ({snaps.length} recorded). A snapshot is taken automatically on first visit each day; historical value before you started tracking can't be reconstructed.
+              </p>
+              <MiniLineChart
+                series={[
+                  { name: "Account Value", color: T.gold, points: snaps.map(s => ({ t: new Date(s.date).getTime(), v: s.valueUSD })) },
+                  { name: "Total P&L", color: T.green, points: snaps.map(s => ({ t: new Date(s.date).getTime(), v: s.plUSD })) },
+                ]}
+                T={T} fmt={moneyAxis} />
+            </>
+          );
+        })()}
       </div>
 
       {/* Modals */}
