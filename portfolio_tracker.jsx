@@ -247,7 +247,7 @@ function Field({ label, children, T }) {
 }
 
 // ─── Add Transaction Modal ───
-function AddTransactionModal({ open, onClose, onSave, T }) {
+function AddTransactionModal({ open, onClose, onSave, tickers, T }) {
   const [form, setForm] = useState({
     market: "us", type: "buy", ticker: "", qty: "", price: "",
     date: new Date().toISOString().split("T")[0], bucket: "Swing (3d-2mo)", notes: "",
@@ -285,7 +285,11 @@ function AddTransactionModal({ open, onClose, onSave, T }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ticker / Symbol" T={T}>
-          <input style={IS} placeholder="e.g. AAPL, BTC" value={form.ticker} onChange={e => set("ticker", e.target.value)} />
+          <input style={IS} list="tx-ticker-list" placeholder="Pick or type…" value={form.ticker}
+            onChange={e => set("ticker", e.target.value)} />
+          <datalist id="tx-ticker-list">
+            {(tickers?.[form.market] || []).map(t => <option key={t} value={t} />)}
+          </datalist>
         </Field>
         <Field label="Date" T={T}>
           <input style={IS} type="date" value={form.date} onChange={e => set("date", e.target.value)} />
@@ -1034,6 +1038,7 @@ export default function PortfolioTracker() {
   const [showCardModal, setShowCardModal] = useState(false);
   const [selectedCard, setSelectedCard] = useState(null);
   const [showWatchAddModal, setShowWatchAddModal] = useState(false);
+  const [draggedWatchId, setDraggedWatchId] = useState(null);
   const [holdingsSort, setHoldingsSort] = useState({ col: "value", dir: "desc" });
   const [fetchingPrices, setFetchingPrices] = useState(false);
   const [calSync, setCalSync] = useState("");
@@ -1103,7 +1108,21 @@ export default function PortfolioTracker() {
     return () => window.removeEventListener("online", handleOnline);
   }, [syncStatus]);
 
-  const addTransaction = (tx) => persist({ ...data, transactions: [...data.transactions, tx] });
+  const addTransaction = (tx) => {
+    const next = { ...data, transactions: [...data.transactions, tx] };
+    // Buying a watch-list ticker promotes it to a holding: carry the card
+    // (targets, thesis, KPIs, events…) into stockCards and drop the watch entry.
+    if (tx.type === "buy") {
+      const w = (data.watchList || []).find(x => x.market === tx.market && x.ticker === tx.ticker);
+      if (w) {
+        const { id, market, ticker, name, ...card } = w;
+        const key = `${tx.market}:${tx.ticker}`;
+        next.stockCards = { ...(data.stockCards || {}), [key]: { ...card, ...(data.stockCards?.[key] || {}) } };
+        next.watchList = (data.watchList || []).filter(x => x.id !== w.id);
+      }
+    }
+    persist(next);
+  };
   const addTopup = (t) => persist({ ...data, topups: [...data.topups, t] });
   const deleteTransaction = (id) => persist({ ...data, transactions: data.transactions.filter(t => t.id !== id) });
   const deleteTopup = (id) => persist({ ...data, topups: data.topups.filter(t => t.id !== id) });
@@ -1119,6 +1138,27 @@ export default function PortfolioTracker() {
   const saveWatchItem = (id, updates) => persist({ ...data, watchList: (data.watchList || []).map(w => w.id === id ? { ...w, ...updates } : w) });
   const addWatchItem = (item) => persist({ ...data, watchList: [...(data.watchList || []), item] });
   const deleteWatchItem = (id) => persist({ ...data, watchList: (data.watchList || []).filter(w => w.id !== id) });
+  // Reorder by id so it stays correct under a market filter (operates on the full list).
+  const reorderWatch = (dragId, targetId) => {
+    if (!dragId || dragId === targetId) return;
+    const list = [...(data.watchList || [])];
+    const from = list.findIndex(w => w.id === dragId);
+    const to = list.findIndex(w => w.id === targetId);
+    if (from < 0 || to < 0) return;
+    const [moved] = list.splice(from, 1);
+    list.splice(to, 0, moved);
+    persist({ ...data, watchList: list });
+  };
+
+  // Known tickers per market (holdings + watch list) for the Trade ticker picker.
+  const tickersByMarket = useMemo(() => {
+    const sets = {};
+    (data.transactions || []).forEach(t => { (sets[t.market] ||= new Set()).add(t.ticker); });
+    (data.watchList || []).forEach(w => { (sets[w.market] ||= new Set()).add(w.ticker); });
+    const out = {};
+    Object.entries(sets).forEach(([k, v]) => { out[k] = [...v].sort(); });
+    return out;
+  }, [data.transactions, data.watchList]);
   const saveHoldingBucket = (key, bucket) => persist({ ...data, holdingBuckets: { ...(data.holdingBuckets || {}), [key]: bucket } });
 
   // ─── Computed Analytics ───
@@ -1581,6 +1621,36 @@ export default function PortfolioTracker() {
                     </tr>
                   </thead>
                   <tbody>
+                    {(() => {
+                      // Subtotal row (USD-normalized, since Value/P&L columns are per-holding native currency).
+                      const shown = analytics.holdings.filter(h => marketFilter === "all" || h.market === marketFilter);
+                      let valueUSD = 0, plUSD = 0, costUSD = 0, hasPL = false;
+                      shown.forEach(h => {
+                        const cur = MARKETS.find(m => m.id === h.market)?.currency;
+                        const fx = data.fxRates?.[cur] ?? DEFAULT_FX[cur] ?? 1;
+                        valueUSD += ((h.currentValue ?? h.costBasis) || 0) * fx;
+                        costUSD += (h.costBasis || 0) * fx;
+                        if (h.unrealizedPL !== null) { plUSD += h.unrealizedPL * fx; hasPL = true; }
+                      });
+                      const plPct = costUSD > 0 ? (plUSD / costUSD) * 100 : null;
+                      const plColor = plUSD >= 0 ? T.green : T.red;
+                      const cell = { padding: "8px 12px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 12, borderBottom: `2px solid ${T.border}`, background: T.surfaceBg, whiteSpace: "nowrap" };
+                      const signed = v => `${v >= 0 ? "+" : "−"}$${formatNum(Math.abs(v))}`;
+                      return (
+                        <tr>
+                          <td style={{ ...cell, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", fontFamily: "'DM Sans', sans-serif", fontSize: 11 }}>Subtotal · USD</td>
+                          <td style={cell}></td>
+                          <td style={cell}></td>
+                          <td style={cell}></td>
+                          <td style={cell}></td>
+                          <td style={{ ...cell, color: T.text }}>${formatNum(valueUSD)}</td>
+                          <td style={{ ...cell, color: hasPL ? plColor : T.textMuted }}>{hasPL ? signed(plUSD) : "—"}</td>
+                          <td style={{ ...cell, color: plPct !== null ? plColor : T.textMuted }}>{plPct !== null ? `${plPct >= 0 ? "+" : ""}${formatNum(plPct, 1)}%` : "—"}</td>
+                          <td style={{ ...cell, color: hasPL ? plColor : T.textMuted }}>{hasPL ? signed(plUSD) : "—"}</td>
+                          <td style={cell}></td>
+                        </tr>
+                      );
+                    })()}
                     {analytics.holdings
                       .filter(h => marketFilter === "all" || h.market === marketFilter)
                       .slice()
@@ -1768,13 +1838,19 @@ export default function PortfolioTracker() {
                   const mkt = MARKETS.find(m => m.id === w.market);
                   return (
                     <div key={w.id}
+                      draggable
+                      onDragStart={() => setDraggedWatchId(w.id)}
+                      onDragEnd={() => setDraggedWatchId(null)}
+                      onDragOver={e => e.preventDefault()}
+                      onDrop={e => { e.preventDefault(); reorderWatch(draggedWatchId, w.id); setDraggedWatchId(null); }}
                       onClick={() => { setSelectedCard({ type: "watch", id: w.id }); setShowCardModal(true); }}
-                      style={{ background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 10, padding: 14, cursor: "pointer" }}
+                      style={{ background: T.cardBg, border: `1px solid ${T.border}`, borderRadius: 10, padding: 14, cursor: "pointer", opacity: draggedWatchId === w.id ? 0.4 : 1 }}
                       onMouseEnter={e => e.currentTarget.style.borderColor = T.gold}
                       onMouseLeave={e => e.currentTarget.style.borderColor = T.border}
                     >
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span title="Drag to reorder" style={{ fontSize: 13, color: T.textMuted, cursor: "grab" }}>⠿</span>
                           <span style={{ fontSize: 16 }}>{mkt?.flag}</span>
                           <div>
                             <span style={{ fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.text, fontSize: 15 }}>{w.ticker}</span>
@@ -1947,7 +2023,7 @@ export default function PortfolioTracker() {
       </div>
 
       {/* Modals */}
-      <AddTransactionModal open={showTxModal} onClose={() => setShowTxModal(false)} onSave={addTransaction} T={T} />
+      <AddTransactionModal open={showTxModal} onClose={() => setShowTxModal(false)} onSave={addTransaction} tickers={tickersByMarket} T={T} />
       <AddTopupModal open={showTopupModal} onClose={() => setShowTopupModal(false)} onSave={addTopup} T={T} />
       <UpdatePriceModal open={showPriceModal} onClose={() => setShowPriceModal(false)}
         holdings={analytics.holdings} currentPrices={data.currentPrices} onSave={updatePrices} T={T} />
